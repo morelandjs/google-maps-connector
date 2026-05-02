@@ -219,12 +219,16 @@ If you'd rather drive it from Claude Desktop:
 
 ## 6. What happens next
 
-Phase 1 ends here. **Do not start Phase 2 (OAuth) until both tools are demonstrably returning correct data via MCP Inspector or Claude Desktop** — see `plan.md` §8.
+This walkthrough only covers Phase 1 (local server, no auth). To get a deployed,
+OAuth-protected MCP endpoint, two paths:
 
-Three open decisions in `plan.md` §12 still need explicit answers before later phases:
+- **Recommended:** run `python install.py` from the repo root. It picks up where this
+  walkthrough leaves off, walks through OAuth setup (one browser visit), pushes secrets
+  to Google Secret Manager, and deploys to Cloud Run.
+- **Manual:** the helper scripts in `infra/` cover the gcloud parts:
+  - `./infra/setup-secrets.sh` — push secrets to Secret Manager (reads from `.env`).
+  - `./infra/deploy.sh` — wraps `gcloud run deploy --source .`.
+  You'll still need to set up the OAuth consent screen + Client ID in the GCP web
+  console manually (see the install.py output for click-paths).
 
-1. **OAuth provider** for Phase 2/3 (Google Identity Platform, Auth0, or local stub).
-2. **Geocoding approach** — currently `searchText` with location bias. Stick with that or add the Geocoding API later if the search-text approach proves flaky for area-name searches.
-3. **`travel_mode` default** — currently *required*. If we want a default, it should be `WALK`.
-
-Flag these to me when you're ready to move on.
+`python uninstall.py` tears the whole thing down when you're ready to clean up.

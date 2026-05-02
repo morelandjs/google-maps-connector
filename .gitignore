@@ -30,3 +30,11 @@ service-account*.json
 .vscode/
 .idea/
 *.swp
+
+# Local-only dev artefacts (kept on disk, not committed)
+# - ref/        vendored Anthropic + Google docs (used during build)
+# - .claude/    Claude Code skills + per-project settings
+# - plan.md     internal design doc — README is the user-facing version
+ref/
+.claude/
+plan.md
