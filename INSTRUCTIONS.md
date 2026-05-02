@@ -1,6 +1,24 @@
-# Phase 1 — Run the Maps MCP server locally
+# Manual install walkthrough
 
-This is the step-by-step you need to follow to (a) get a Google Maps API key and (b) run and test the local MCP server. The Phase 1 exit criterion is: **both tools (`search_nearby_places`, `get_route`) return live, correct data when called from MCP Inspector or Claude Desktop.** No OAuth, no Cloud Run yet — that's Phase 2 / 3.
+> **For most users, the one-command installer is the right path:**
+> ```bash
+> python install.py
+> ```
+> It walks you through every step in this document end-to-end, deploys to Cloud Run,
+> and gets you a working MCP endpoint in your own GCP account in ~10 minutes.
+> See `install.py --help` for flags, or `python uninstall.py` to tear it all down.
+
+This document is for people who want to do the same setup **by hand** — useful when
+debugging the installer, when you want to understand each step, or when you're
+intentionally diverging (different region, custom project layout, etc.).
+
+It covers Phase 1 (local MCP server with a real API key) and gestures at Phase 2
+(local OAuth) and Phase 3 (Cloud Run deploy). The full Phase 2/3 setup is automated
+by `install.py`; the deeper manual recipe lives in `infra/setup-secrets.sh` +
+`infra/deploy.sh`.
+
+The Phase 1 exit criterion is: **both tools (`search_nearby_places`, `get_route`)
+return live, correct data when called from MCP Inspector or Claude Desktop.**
 
 ---
 
@@ -11,7 +29,7 @@ You need a Google Cloud project, two enabled APIs, an API key, and billing set u
 ### 1.1 Create / pick a project
 
 1. Open the [Cloud Console](https://console.cloud.google.com/) signed in as your Google account.
-2. Top bar → project picker → **New Project**. Name it something like `claude-maps`.
+2. Top bar → project picker → **New Project**. Name it something like `google-maps-mcp`.
 3. Make sure that project is selected for the rest of the steps (the project name shows in the top bar).
 
 ### 1.2 Enable a billing account

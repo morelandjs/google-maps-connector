@@ -1,8 +1,8 @@
-"""FastMCP server exposing two Google Maps tools to Claude.
+"""FastMCP server exposing two Google Maps tools to any MCP client.
 
 Defaults to Streamable HTTP on 0.0.0.0:$PORT/mcp (matches the Cloud Run target).
-Pass --stdio to switch to stdio transport, e.g. for direct use from a
-claude_desktop_config.json entry.
+Pass --stdio to switch to stdio transport, e.g. for direct use from a local
+client config like claude_desktop_config.json.
 """
 
 from __future__ import annotations
@@ -256,8 +256,8 @@ async def search_nearby_places(
 
     Use this for any "what's around here?" / "are there good X near Y?" /
     "best Z in W" question. Returns a ranked list of real places with
-    addresses, ratings, price tier, and Google Maps links — Claude formats
-    that for the user; the tool itself is deterministic.
+    addresses, ratings, price tier, and Google Maps links — the calling
+    model formats that for the user; the tool itself is deterministic.
 
     Trigger phrases that should call this tool:
       "what's around <X>?", "find me <category> near <Y>",
@@ -439,8 +439,8 @@ async def get_route(
       "what time should I leave to be at <X> by <T>?",
       "what's the best route from <A> to <B>?",
       "is there a faster way to <X>?"
-    Reach for this tool even for routes Claude might recall — transit
-    schedules and traffic conditions are not in training data.
+    Reach for this tool even for routes the model might already "know" —
+    transit schedules and traffic conditions are not in training data.
 
     Anti-patterns (when NOT to use this tool):
       - "How far is <X> from <Y>?" framed as trivia (great-circle distance,
