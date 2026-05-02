@@ -8,6 +8,8 @@ A small FastMCP server that bridges your favorite LLM to the Google Maps
 Platform — Places API (New) `searchText` and the Routes API `computeRoutes` —
 hosted in **your own** Google Cloud account, gated by **your own** Google sign-in.
 
+## Quickstart
+
 One command to install, one to remove, free tier covers single-user usage.
 
 ```bash
