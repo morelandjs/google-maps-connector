@@ -1,11 +1,18 @@
 ---
 name: google-maps-docs
-description: Read Google Maps Platform documentation, specifically the Places API (New) Nearby Search and the Routes API. Use when designing or implementing the FastMCP tools that wrap `places.searchNearby` or compute directions/travel time, when figuring out request/response shapes, field masks, authentication (API key vs OAuth), pricing/quota, or enabling these APIs in Google Cloud.
+description: Read Google documentation for this project — Google Maps Platform (Places API New `searchNearby` / `searchText`, Routes API `computeRoutes`) **and Google Cloud Run** (container contract, deploying with `gcloud run deploy`, request authentication, Secret Manager integration). Use when designing or implementing the FastMCP tools, when figuring out Maps request/response shapes, field masks, API-key vs OAuth, pricing/quota, enabling APIs in Google Cloud, or when planning/executing the Cloud Run deployment (Phase 3).
 ---
 
-# Google Maps Platform documentation
+# Google Maps Platform + Google Cloud Run documentation
 
-Local reference material lives in `reference_material/google_maps/`. **This directory is currently empty** — fetch upstream docs with WebFetch and, when useful, save trimmed copies into `reference_material/google_maps/` so future sessions have a local cache.
+Local reference material lives in `ref/google/`. Read these files first — they are the canonical source for this project. If a topic is not covered locally, fetch the upstream URL listed below and, when useful, save a trimmed copy back into `ref/google/` so future sessions have a local cache.
+
+## Local files
+
+- `ref/google/places_api_overview.md` — Places API (New) overview.
+- `ref/google/places_nearby_search.md` — `places.searchNearby` request/response, field masks.
+- `ref/google/compute_routes_api.md` — Routes API `computeRoutes` request body, headers, traffic-aware routing.
+- `ref/google/host_mcp_servers_on_cloud_run.md` — Cloud Run deployment contract for MCP servers (PORT env var, container requirements, request timeouts, authenticated invocations, Secret Manager integration). **Start here for Phase 3 deployment work.**
 
 ## Primary upstream URLs (WebFetch these)
 
@@ -26,6 +33,16 @@ Local reference material lives in `reference_material/google_maps/`. **This dire
 - Get an API key: `https://developers.google.com/maps/documentation/places/web-service/get-api-key`
 - Enable APIs in Google Cloud: `https://developers.google.com/maps/documentation/places/web-service/cloud-setup`
 - API key restrictions / security: `https://developers.google.com/maps/api-security-best-practices`
+
+### Google Cloud Run
+- Cloud Run landing: `https://cloud.google.com/run`
+- Docs index: `https://cloud.google.com/run/docs`
+- Container runtime contract (PORT, request timeouts, signal handling): `https://cloud.google.com/run/docs/container-contract`
+- Deploying a service: `https://cloud.google.com/run/docs/deploying`
+- `gcloud run deploy` reference: `https://cloud.google.com/sdk/gcloud/reference/run/deploy`
+- Request authentication / IAM (`--no-allow-unauthenticated`, ID tokens): `https://cloud.google.com/run/docs/authenticating/overview`
+- Configure secrets from Secret Manager: `https://cloud.google.com/run/docs/configuring/services/secrets`
+- Secret Manager docs: `https://cloud.google.com/secret-manager/docs`
 
 ## Project-specific notes
 

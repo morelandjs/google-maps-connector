@@ -1,9 +1,5 @@
 # Claude × Google Maps — Project Plan
 
-> Source: `instructions.txt`. This document is a synthesized, structured plan derived from
-> those instructions. Sections marked **[New]** are additions or sharpenings that were not in
-> the original brief; sections marked **[Open]** are decisions that still need a call.
-
 ---
 
 ## 1. Goal
@@ -27,7 +23,7 @@ Two anchor use cases drive the design:
 ### UC-1: Departure-time / directions
 > *"What time do I need to leave to get to [destination] by 6pm?"*
 
-Claude mobile calls `get_directions`, receives a structured route response, and synthesizes
+Claude mobile calls `get_route`, receives a structured route response, and synthesizes
 the departure-time / ETA / step summary in its own reply.
 
 **Acceptance criteria**
@@ -46,6 +42,8 @@ formats the returned list for the user.
 - Accepts either a named area (e.g., "Soho") or an explicit lat/lng + radius.
 - Returns name, address, rating, price level, and a maps link per result. **[New]**
 - Caps results to a reasonable count (e.g., 10) to keep prompts small. **[New]**
+- Return basic place details such as placename, address, open hours,
+    description, and website URL.
 
 ---
 
@@ -93,7 +91,7 @@ to Anthropic).
   | Tool | Inputs | Output |
   |---|---|---|
   | `search_nearby_places` | `query: str`, `location: {lat, lng}` *or* `area_name: str`, `radius_m: int = 1500`, `max_results: int = 10` | List of `{name, address, lat, lng, rating, user_rating_count, price_level, place_id, maps_url}` |
-  | `get_directions` | `origin: str \| {lat, lng}`, `destination: str \| {lat, lng}`, `travel_mode: "WALK" \| "TRANSIT"` (required in v1), `arrival_time?: ISO8601`, `departure_time?: ISO8601` | `{distance_m, duration_s, duration_in_traffic_s, departure_time, arrival_time, polyline, steps[]}` |
+  | `get_route` | `origin: str \| {lat, lng}`, `destination: str \| {lat, lng}`, `travel_mode: "WALK" \| "TRANSIT"` (required in v1), `arrival_time?: ISO8601`, `departure_time?: ISO8601` | `{distance_m, duration_s, duration_in_traffic_s, departure_time, arrival_time, polyline, steps[]}` |
 
 - **Response shape is JSON, not prose.** Claude mobile is doing the formatting; the server
   should hand back machine-friendly fields and let the model write the user-facing sentence. **[New]**
@@ -154,6 +152,11 @@ Pick a provider during Phase 2; the same choice carries into Phase 3.
 
 ## 7. Repository layout
 
+The current working directory (`google-maps-connector/`) is **already an initialized git
+repository** and serves as the **monorepo** for this project — the MCP server, deployment
+infra, and reference material all live here under one git history. There is no second
+repository to create; all Phase 1–3 work is committed against this repo.
+
 Monorepo, shallow, **one deployable**:
 
 ```
@@ -188,7 +191,7 @@ current one is demonstrably working.**
 
 ### Phase 1 — Local MCP server, no auth
 - FastMCP server runs locally via stdio or HTTP.
-- Both tools (`search_nearby_places`, `get_directions`) call live Google APIs successfully
+- Both tools (`search_nearby_places`, `get_route`) call live Google APIs successfully
   against the developer's API key.
 - **Exit criterion:** running the server and pointing Claude Desktop at it via the MCP
   inspector returns correct results for both anchor use cases. **[New — concrete, demoable.]**
@@ -254,21 +257,3 @@ Collected from above so they're not lost:
 1. **OAuth provider** for Phase 2 — Google Identity Platform / Firebase Auth vs. Auth0 vs. minimal local stub. (§6)
 2. **Geocoding approach** — `searchText` with location bias vs. enabling Geocoding API. (§4.1)
 3. **Travel-mode defaults** — should `travel_mode` be required, or default to `WALK`? (§4.1)
-
----
-
-## 13. Suggested deltas vs. the original brief **[New]**
-
-In one place, the substantive things this plan changes or adds beyond `instructions.txt`:
-
-- **Collapsed the architecture to a single MCP server.** Per direction: Claude mobile is the
-  only LLM in the system; the intermediary agent and Bedrock dependency are removed.
-- **Switched cloud hosting from AWS AgentCore to Google Cloud Run.** The whole stack is now
-  Google + Claude with no AWS dependency: hosting on Cloud Run, secrets in Google Secret
-  Manager, logs in Google Cloud Logging.
-- Disentangled the two auth boundaries (Google APIs vs. mobile→Cloud Run).
-- Made tool input/output schemas explicit so they can be reviewed before coding.
-- Called out **field masks** as a first-class concern (cost + correctness).
-- Added geocoding as a real design choice rather than an implicit assumption.
-- Added testing, observability, and cost-control sections.
-- Added explicit, demoable exit criteria per development phase.

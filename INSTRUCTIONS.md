@@ -1,0 +1,212 @@
+# Phase 1 — Run the Maps MCP server locally
+
+This is the step-by-step you need to follow to (a) get a Google Maps API key and (b) run and test the local MCP server. The Phase 1 exit criterion is: **both tools (`search_nearby_places`, `get_route`) return live, correct data when called from MCP Inspector or Claude Desktop.** No OAuth, no Cloud Run yet — that's Phase 2 / 3.
+
+---
+
+## 1. Google Cloud setup (one-time)
+
+You need a Google Cloud project, two enabled APIs, an API key, and billing set up. ~10 minutes.
+
+### 1.1 Create / pick a project
+
+1. Open the [Cloud Console](https://console.cloud.google.com/) signed in as your Google account.
+2. Top bar → project picker → **New Project**. Name it something like `claude-maps`.
+3. Make sure that project is selected for the rest of the steps (the project name shows in the top bar).
+
+### 1.2 Enable a billing account
+
+Google requires a billing account on file even though you'll stay in the free tier:
+
+1. Hamburger menu → **Billing** → **Link a billing account**.
+2. Add a payment method if you don't have one.
+3. Stay defensive: the free credit covers more than this project will use, but you should still cap quota in step 1.5.
+
+### 1.3 Enable the two APIs we need
+
+In the Cloud Console search bar, search for and click **Enable** on each:
+
+1. **Places API (New)** — used by `search_nearby_places`.
+2. **Routes API** — used by `get_route`.
+
+> Do **not** enable the legacy "Places API" (without "(New)") — we use the new endpoint. You also do **not** need to enable the Geocoding API; the MCP server uses Places `searchText` with a location bias instead.
+
+### 1.4 Create an API key
+
+1. **APIs & Services → Credentials → Create Credentials → API key**.
+2. Copy the key. Treat it like a password.
+3. Click **Edit API key** on the row that just appeared and **restrict** it:
+   - **API restrictions → Restrict key →** select *Places API (New)* and *Routes API*.
+   - Under **Application restrictions** you can leave "None" for local dev. (For Phase 3, we'll restrict by IP / Cloud Run service.)
+4. Save.
+
+### 1.5 Set a daily quota cap (cheap insurance)
+
+1. **APIs & Services → Quotas & System Limits**.
+2. For both *Places API (New)* and *Routes API*, find the per-day request quota and set it to a low number (e.g. 500/day) while developing. You can raise it later.
+
+---
+
+## 2. Local repo setup
+
+You're already inside the repo at `~/Hacking/google-maps-connector`. The Phase 1 code lives in `mcp_server/`.
+
+### 2.1 Add your API key
+
+```bash
+cd mcp_server
+cp .env.example .env
+# edit .env and replace YOUR_API_KEY with the key you created above
+```
+
+`.env` is gitignored — it will not be committed. **Never paste your real key into any other file in this repo, including this one.**
+
+### 2.2 Install Python dependencies
+
+You need Python 3.11+ (you have 3.13 already). Either toolchain works:
+
+**Option A — `uv` (recommended, fast):**
+```bash
+# Install uv if you don't have it: https://docs.astral.sh/uv/
+brew install uv
+
+cd mcp_server
+uv sync --extra dev    # creates .venv/ and installs runtime + test deps
+```
+
+**Option B — plain venv + pip:**
+```bash
+cd mcp_server
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+### 2.3 Run the unit tests
+
+```bash
+cd mcp_server
+.venv/bin/pytest        # or: uv run pytest
+```
+
+You should see `22 passed, 2 skipped`. The 22 are hermetic — they mock Google's APIs with `respx`, so they pass without a real key or internet. The 2 skipped are the live smoke tests (see §2.4).
+
+### 2.4 (Optional) Run the live smoke tests
+
+Two tests, one per tool, that hit real Google APIs with your real key. They cost two API calls (well inside any sane quota) and exist to catch the class of regressions hermetic mocks can't — Google renaming a field, drift between docs and reality, key restrictions getting misconfigured.
+
+```bash
+cd mcp_server
+RUN_LIVE_TESTS=1 .venv/bin/pytest tests/test_live_smoke.py -v
+```
+
+You should see both tests pass. Run them once now to confirm your setup, and again before any future deploy. They're skipped automatically when the env var isn't set, so the everyday `pytest` run stays fast and offline.
+
+---
+
+## 3. Run the MCP server
+
+Two transports. Use whichever your client wants.
+
+### 3.1 Streamable HTTP (default — what Cloud Run will eventually serve)
+
+```bash
+cd mcp_server
+.venv/bin/python server.py
+```
+
+Server listens on `http://localhost:8000/mcp`. Set `PORT=…` to override. Ctrl-C to stop.
+
+### 3.2 Stdio (drop-in for Claude Desktop's local-server config)
+
+```bash
+cd mcp_server
+.venv/bin/python server.py --stdio
+```
+
+The process reads JSON-RPC frames on stdin and writes responses on stdout. You won't normally invoke this directly — Claude Desktop spawns it for you (see §4.2).
+
+---
+
+## 4. Verify both tools work end-to-end
+
+### 4.1 (Easiest) MCP Inspector
+
+`@modelcontextprotocol/inspector` is the official MCP test client. It speaks the protocol and gives you a UI to call each tool with arbitrary arguments.
+
+1. Start the server in one terminal: `.venv/bin/python server.py`.
+2. In another terminal, run the inspector:
+   ```bash
+   npx @modelcontextprotocol/inspector
+   ```
+3. In the inspector UI:
+   - **Transport Type:** *Streamable HTTP*
+   - **URL:** `http://localhost:8000/mcp`
+   - Click **Connect**.
+4. You should see two tools listed: `search_nearby_places` and `get_route`.
+
+**Phase 1 acceptance run** — call each tool and confirm the JSON looks reasonable:
+
+- `search_nearby_places` with `query="bookstores"`, `area_name="Soho, Manhattan"`, `max_results=5` → expect a list of NYC bookstores with addresses, ratings, and `maps_url` links.
+- `search_nearby_places` with `query="coffee"`, `coordinates={"lat": 40.7223, "lng": -74.0030}`, `radius_m=500` → expect coffee shops near that point.
+- `get_route` with `origin="Times Square, New York"`, `destination="Brooklyn Bridge"`, `travel_mode="WALK"` → expect a `distance_m`, `duration_s`, `polyline`, and a list of `steps`.
+- `get_route` with `origin="JFK Airport"`, `destination="Penn Station, NYC"`, `travel_mode="TRANSIT"`, `arrival_time="2026-04-27T18:00:00Z"` → expect a `departure_time` derived from the arrival.
+
+If all four return sensible data, **Phase 1 is done.**
+
+### 4.2 (Optional) Claude Desktop with stdio
+
+If you'd rather drive it from Claude Desktop:
+
+1. Edit `~/Library/Application Support/Claude/claude_desktop_config.json` and add:
+
+   ```json
+   {
+     "mcpServers": {
+       "Google Maps": {
+         "command": "/absolute/path/to/google-maps-connector/mcp_server/.venv/bin/python",
+         "args": [
+           "/absolute/path/to/google-maps-connector/mcp_server/server.py",
+           "--stdio"
+         ],
+         "env": {
+           "GOOGLE_MAPS_API_KEY": "your-key-here"
+         }
+       }
+     }
+   }
+   ```
+
+   Use absolute paths. The `env` block overrides `.env` only if set; you can also leave it out and rely on the `.env` file (Claude Desktop runs `command` from your home dir, so make sure `dotenv` finds it — easier to just put the key in `env` here).
+
+2. Quit and relaunch Claude Desktop.
+3. In a new chat, you should see a tool indicator. Try: *"What bookstores are near Soho in Manhattan?"* and *"How long would it take to walk from Times Square to the Brooklyn Bridge?"*
+
+> Claude Desktop does **not** support Streamable HTTP local servers directly today, which is why this path uses stdio. The Cloud Run deployment in Phase 3 is the one that Claude mobile (and Desktop's "custom connector" feature) will reach over HTTPS.
+
+---
+
+## 5. Troubleshooting
+
+| Symptom | Likely cause |
+|---|---|
+| `RuntimeError: GOOGLE_MAPS_API_KEY is not set` at startup | `.env` missing or you're running from the repo root — `cd mcp_server` first, or export the env var. |
+| `places:searchText returned 403` | API key not enabled for Places API (New), or API restrictions don't include it. Re-check §1.4. |
+| `places:searchText returned 400` with "field mask" in the body | The server should be sending the mask; if you've edited `google_maps.py`, verify `X-Goog-FieldMask` is still set. |
+| `computeRoutes returned 400` "REQUEST_DENIED" | Routes API not enabled, or not allowed by the key restriction. |
+| Empty `places: []` for an area-name search | Try a more specific area (e.g. `"Soho, Manhattan, NY"` instead of just `"Soho"`). The query is appended literally to your search text. |
+| Inspector shows tools but calls hang | Server is up but the MCP session probably needs a fresh connection — click *Reconnect* in the inspector. |
+
+---
+
+## 6. What happens next
+
+Phase 1 ends here. **Do not start Phase 2 (OAuth) until both tools are demonstrably returning correct data via MCP Inspector or Claude Desktop** — see `plan.md` §8.
+
+Three open decisions in `plan.md` §12 still need explicit answers before later phases:
+
+1. **OAuth provider** for Phase 2/3 (Google Identity Platform, Auth0, or local stub).
+2. **Geocoding approach** — currently `searchText` with location bias. Stick with that or add the Geocoding API later if the search-text approach proves flaky for area-name searches.
+3. **`travel_mode` default** — currently *required*. If we want a default, it should be `WALK`.
+
+Flag these to me when you're ready to move on.

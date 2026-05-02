@@ -1,0 +1,53 @@
+# Build-context filter for `docker build .` and `gcloud run deploy --source .`.
+# Keeps the build context tight (well under 1MB) and prevents secrets or
+# local-only state from leaking into images.
+
+# Secrets — must never enter the image
+**/.env
+**/.env.local
+**/*-credentials*.json
+**/service-account*.json
+
+# Python build/runtime artefacts
+**/__pycache__/
+**/*.py[cod]
+**/*.so
+**/*.egg-info/
+**/.venv/
+**/venv/
+**/build/
+**/dist/
+
+# Test / tooling caches
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.coverage
+**/htmlcov/
+
+# Local-only docs and reference material — not needed in the image
+ref/
+.claude/
+INSTRUCTIONS.md
+plan.md
+CLAUDE.md
+README.md
+
+# Tests don't ship to production
+mcp_server/tests/
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Cloud-build / Docker leftovers (Dockerfile itself is read by Docker
+# directly, not through the context — safe to ignore).
+Dockerfile
+.dockerignore
