@@ -345,6 +345,10 @@ def _error_message(website: str, exc: BaseException) -> str:
             "scraped headlessly. Report this venue as unchecked rather than "
             "assuming it has no events."
         )
+    if isinstance(exc, gemini.GeminiBillingError):
+        # Same underlying cause for every site — surface it verbatim, no
+        # per-site noise, so the agent tells the user once: add credits.
+        return str(exc)
     if isinstance(exc, gemini.GeminiError):
         return f"Event extraction failed for {website}: {exc}"
     if isinstance(exc, (DeadlineExceeded, StageTimeout)):

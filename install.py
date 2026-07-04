@@ -238,10 +238,11 @@ def random_suffix(length: int = 5) -> str:
 
 
 def validate_gemini_key(key: str) -> str:
-    """Live-check a pasted Gemini key with a one-token call.
+    """Live-check a Gemini key with a one-token call.
 
-    Returns 'ok', 'quota' (valid key, free-tier limit hit), 'invalid', or
-    'unknown' (network trouble — don't block the install on it).
+    Returns 'ok', 'no_credits' (valid key but billing/prepaid credits
+    depleted — event search will fail), 'quota' (free-tier rate limit),
+    'invalid', or 'unknown' (network trouble — don't block the install).
     """
     req = urllib.request.Request(
         "https://generativelanguage.googleapis.com/v1beta/models/"
@@ -256,7 +257,11 @@ def validate_gemini_key(key: str) -> str:
         urllib.request.urlopen(req, timeout=20)
         return "ok"
     except urllib.error.HTTPError as e:
-        return "quota" if e.code == 429 else "invalid"
+        if e.code != 429:
+            return "invalid"
+        body = (e.read().decode("utf-8", "ignore") or "").lower()
+        markers = ("credits are depleted", "prepayment", "billing")
+        return "no_credits" if any(m in body for m in markers) else "quota"
     except urllib.error.URLError:
         return "unknown"
 
@@ -580,6 +585,11 @@ def step_gemini_key(state, args):
     verdict = validate_gemini_key(key_str)
     if verdict == "ok":
         success("key verified with a live Gemini call")
+    elif verdict == "no_credits":
+        warn("⚠ Key works, but this project has NO Gemini billing credits, so")
+        warn("  event search (get_events) will fail until you add them. Places")
+        warn("  and directions are unaffected. Fix now or later at:")
+        warn("  https://ai.studio/projects  (Billing → add prepaid credits)")
     elif verdict == "quota":
         warn("key valid but rate-limited right now (free tier) — fine, it works")
     elif verdict == "invalid":

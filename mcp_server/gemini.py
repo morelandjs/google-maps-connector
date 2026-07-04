@@ -134,6 +134,20 @@ class GeminiError(RuntimeError):
     """Raised when a Gemini API call fails or returns an unparseable body."""
 
 
+class GeminiBillingError(GeminiError):
+    """The API key's billing/prepaid credits are depleted — won't self-heal."""
+
+
+# Substrings in a 429 body that mean "add money", not "wait a minute".
+_BILLING_MARKERS = ("credits are depleted", "prepayment", "billing")
+
+
+def _is_billing_depletion(resp: httpx.Response) -> bool:
+    return resp.status_code == 429 and any(
+        m in resp.text.lower() for m in _BILLING_MARKERS
+    )
+
+
 def _retry_delay_from(resp: httpx.Response) -> float | None:
     """Extract google.rpc.RetryInfo's retryDelay ('12s') from an error body."""
     try:
@@ -219,6 +233,13 @@ async def generate_json(
                 raise GeminiError(f"{model} transport error: {exc}") from exc
             await asyncio.sleep(1.5 * 2**attempt)
             continue
+        # Depleted credits won't recover on retry — fail fast with the fix.
+        if _is_billing_depletion(resp):
+            raise GeminiBillingError(
+                "Gemini billing/prepaid credits are depleted. Add credits or "
+                "check billing at https://ai.studio/projects — event search "
+                "can't run until then. (Places and directions are unaffected.)"
+            )
         if resp.status_code in (429, 500, 502, 503) and not last:
             delay = _retry_delay_from(resp) or 1.5 * 2**attempt
             if delay > MAX_RETRY_DELAY_S:

@@ -146,6 +146,33 @@ async def test_generate_json_honors_server_retry_delay(monkeypatch):
 
 
 @respx.mock
+async def test_generate_json_fails_fast_on_depleted_credits(no_retry_sleep):
+    """A billing/credit-depletion 429 won't self-heal — raise immediately
+    (no retries) with an actionable message, distinct from quota."""
+    route = respx.post(EXTRACT_URL).mock(
+        return_value=httpx.Response(
+            429,
+            json={
+                "error": {
+                    "code": 429,
+                    "status": "RESOURCE_EXHAUSTED",
+                    "message": "Your prepayment credits are depleted. Please "
+                    "go to AI Studio to manage billing.",
+                }
+            },
+        )
+    )
+    with pytest.raises(gemini.GeminiBillingError, match="credits are depleted"):
+        await generate_json(
+            api_key="K",
+            model=EXTRACT_MODEL,
+            parts=[{"text": "x"}],
+            response_schema=EVENTS_RESPONSE_SCHEMA,
+        )
+    assert route.call_count == 1  # no wasted retries
+
+
+@respx.mock
 async def test_generate_json_fails_fast_when_quota_window_exhausted(no_retry_sleep):
     route = respx.post(EXTRACT_URL).mock(return_value=_quota_429("3600s"))
     with pytest.raises(GeminiError, match="quota exhausted"):
