@@ -21,9 +21,13 @@ htmlcov/
 # Secrets — NEVER commit. Real keys live in .env (local) or Secret Manager (Cloud Run).
 .env
 .env.local
+.env.old-dead-keys
 *.pem
 *-credentials*.json
 service-account*.json
+
+# Local UX-test harness output (real scraped data + chat transcripts)
+ux_results/
 
 # OS / IDE
 .DS_Store

@@ -52,10 +52,14 @@ REQUIRED_APIS = [
     "secretmanager.googleapis.com",
     "artifactregistry.googleapis.com",
     "apikeys.googleapis.com",
+    # Lets the Gemini (AI Studio) key live in THIS project instead of AI
+    # Studio auto-creating a separate one — so everything stays consolidated.
+    "generativelanguage.googleapis.com",
 ]
 
 SECRET_NAMES = [
     "GOOGLE_MAPS_API_KEY",
+    "GEMINI_API_KEY",
     "GOOGLE_OAUTH_CLIENT_ID",
     "GOOGLE_OAUTH_CLIENT_SECRET",
     "GOOGLE_OAUTH_ALLOWED_EMAILS",
@@ -209,8 +213,15 @@ CLIENT_ID_SUFFIX = ".apps.googleusercontent.com"
 CLIENT_SECRET_PREFIX = "GOCSPX-"
 
 
+# GCP rejects project IDs containing these substrings (fails at create time
+# with an opaque "prohibited words" error — catch it up front instead).
+PROHIBITED_PROJECT_WORDS = ("google", "ssl", "goog")
+
+
 def valid_project_id(s: str) -> bool:
-    return bool(PROJECT_ID_RE.match(s))
+    if not PROJECT_ID_RE.match(s):
+        return False
+    return not any(w in s.lower() for w in PROHIBITED_PROJECT_WORDS)
 
 
 def valid_emails(s: str) -> bool:
@@ -224,6 +235,30 @@ def random_suffix(length: int = 5) -> str:
 
 
 # ---------- Secret-Manager helper ----------
+
+
+def validate_gemini_key(key: str) -> str:
+    """Live-check a pasted Gemini key with a one-token call.
+
+    Returns 'ok', 'quota' (valid key, free-tier limit hit), 'invalid', or
+    'unknown' (network trouble — don't block the install on it).
+    """
+    req = urllib.request.Request(
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        "gemini-3.1-flash-lite:generateContent",
+        data=json.dumps(
+            {"contents": [{"role": "user", "parts": [{"text": "ping"}]}]}
+        ).encode(),
+        headers={"Content-Type": "application/json", "x-goog-api-key": key},
+        method="POST",
+    )
+    try:
+        urllib.request.urlopen(req, timeout=20)
+        return "ok"
+    except urllib.error.HTTPError as e:
+        return "quota" if e.code == 429 else "invalid"
+    except urllib.error.URLError:
+        return "unknown"
 
 
 def push_secret_value(name: str, value: str, project_id: str) -> None:
@@ -347,7 +382,9 @@ def step_select_project(state, args):
                 state["project_id"] = projects[n - 1][0]
                 break
             elif n == new_idx:
-                default_id = f"google-maps-mcp-{random_suffix()}"
+                # GCP forbids the substring "google" (and "ssl", "goog") in
+                # project IDs, so the default must NOT be "google-maps-...".
+                default_id = f"maps-mcp-{random_suffix()}"
                 while True:
                     pid = prompt(
                         "New project ID (6-30 chars, lowercase letters/digits/hyphens)",
@@ -378,10 +415,12 @@ def step_select_project(state, args):
 
 @step("Confirm billing account is linked")
 def step_billing(state, args):
+    # Use GA `gcloud billing` (not `beta`) — beta triggers a hidden
+    # component-install prompt on first use that looks like a freeze.
     pid = state["project_id"]
     out = subprocess.run(
         [
-            "gcloud", "beta", "billing", "projects", "describe", pid,
+            "gcloud", "billing", "projects", "describe", pid,
             "--format=value(billingEnabled)",
         ],
         capture_output=True, text=True,
@@ -391,14 +430,18 @@ def step_billing(state, args):
         return
 
     info("Project does not have a billing account linked.")
+    warn(
+        "💰 Linking billing is what makes charges POSSIBLE. Expected here: "
+        "~$0.10/mo (image storage); Maps stays in free caps at personal scale."
+    )
     info("Open this URL in your browser:")
     info(f"  https://console.cloud.google.com/billing/linkedaccount?project={pid}")
-    info("Link a billing account, then return here.")
+    info("Link (or create) a billing account, then return here.")
     input("  Press Enter when done...")
 
     out = gcloud(
         [
-            "beta", "billing", "projects", "describe", pid,
+            "billing", "projects", "describe", pid,
             "--format=value(billingEnabled)",
         ]
     )
@@ -478,6 +521,77 @@ def step_create_api_key(state, args):
     push_secret_value("GOOGLE_MAPS_API_KEY", key_str, pid)
     state["maps_api_key_pushed"] = True
     success("key created, restricted to Places + Routes, pushed to Secret Manager")
+
+
+@step("Create Gemini API key (for get_events)")
+def step_gemini_key(state, args):
+    pid = state["project_id"]
+
+    if state.get("gemini_api_key_pushed"):
+        success("already configured in a prior run")
+        return
+
+    # An AI Studio key and a Cloud API key are the same object, so we mint one
+    # in THIS project restricted to the Gemini API — no aistudio.google.com
+    # visit, no paste, billing consolidated (needs generativelanguage.googleapis
+    # .com, enabled in step_enable_apis).
+    info("Event scraping (get_events) uses Gemini.")
+    warn(
+        "💰 With billing on this project, event search costs ~$0.05-0.15 each. "
+        "Free tier = 20 requests/day ≈ 1-2 searches before it rate-limits."
+    )
+
+    list_out = gcloud(
+        [
+            "services", "api-keys", "list",
+            "--filter=displayName=Gemini MCP",
+            f"--project={pid}",
+            "--format=value(name)",
+        ]
+    )
+    existing = [x for x in list_out.strip().splitlines() if x]
+    if existing and confirm("Reuse existing 'Gemini MCP' key?", default=True):
+        name = existing[0]
+    else:
+        info("Creating restricted Gemini API key...")
+        out = gcloud(
+            [
+                "services", "api-keys", "create",
+                "--display-name=Gemini MCP",
+                f"--project={pid}",
+                "--api-target=service=generativelanguage.googleapis.com",
+                "--format=json",
+            ]
+        )
+        data = json.loads(out)
+        name = data.get("name", "")
+        if name.startswith("operations/"):
+            name = (data.get("response") or {}).get("name", "")
+        if not name:
+            die(f"Could not parse API key resource name from output:\n{out[:300]}")
+
+    key_str = gcloud(
+        [
+            "services", "api-keys", "get-key-string", name,
+            "--format=value(keyString)",
+        ]
+    ).strip()
+
+    verdict = validate_gemini_key(key_str)
+    if verdict == "ok":
+        success("key verified with a live Gemini call")
+    elif verdict == "quota":
+        warn("key valid but rate-limited right now (free tier) — fine, it works")
+    elif verdict == "invalid":
+        # A brand-new key can lag a few seconds before it's live.
+        warn("key not accepted yet (may need a moment to propagate); storing it")
+    else:
+        warn("could not reach the Gemini API to verify; storing the key anyway")
+
+    state["gemini_api_key_name"] = name
+    push_secret_value("GEMINI_API_KEY", key_str, pid)
+    state["gemini_api_key_pushed"] = True
+    success("key created, restricted to Gemini, pushed to Secret Manager")
 
 
 @step("Compute predicted Cloud Run URL")
@@ -591,6 +705,48 @@ def step_allowlist(state, args):
     success(f"allowlist set: {emails}")
 
 
+@step("Personalize: results language")
+def step_language(state, args):
+    """All tool results come back in this language, wherever the places are —
+    Google localizes Places/Routes natively; event extraction translates."""
+    info("Your preferred language for results. This matters most when you're")
+    info("TRAVELING ABROAD: event listings are scraped straight off venues'")
+    info("websites, so a Paris venue's site is in French — set this to 'en' and")
+    info("those events come back translated to English. (Place names and")
+    info("directions are localized by Google automatically either way.)")
+    if args.language:
+        lang = args.language
+    else:
+        lang = prompt(
+            "Language you want results in — BCP-47 code (en, es, fr, de, ja, ...)",
+            default=state.get("language", "en"),
+        )
+    if not re.fullmatch(r"[a-z]{2,3}(-[A-Z]{2})?", lang):
+        die(f"'{lang}' is not a BCP-47 code like 'en' or 'pt-BR'. Re-run.")
+    state["language"] = lang
+    success(f"results language: {lang}")
+
+
+@step("Personalize: default travel mode")
+def step_travel_mode(state, args):
+    """Used by get_route whenever the user doesn't say how they're
+    travelling — a New Yorker wants TRANSIT, a driver wants DRIVE."""
+    info("This is how YOU usually get around. When you ask for directions")
+    info("without saying how ('how do I get to X?'), the connector assumes this")
+    info("— a NYC subway rider picks TRANSIT; someone who drives picks DRIVE.")
+    if args.travel_mode:
+        mode = args.travel_mode.upper()
+    else:
+        mode = prompt(
+            "How you usually travel (TRANSIT / DRIVE / WALK)",
+            default=state.get("travel_mode", "TRANSIT"),
+        ).upper()
+    if mode not in ("TRANSIT", "DRIVE", "WALK"):
+        die(f"'{mode}' is not TRANSIT, DRIVE, or WALK. Re-run.")
+    state["travel_mode"] = mode
+    success(f"default travel mode: {mode}")
+
+
 @step("Grant Cloud Run runtime SA access to secrets")
 def step_grant_iam(state, args):
     pid = state["project_id"]
@@ -611,14 +767,54 @@ def step_grant_iam(state, args):
     success(f"granted secretAccessor on {len(SECRET_NAMES)} secrets to {sa}")
 
 
+@step("Create OAuth-state bucket")
+def step_oauth_state_bucket(state, args):
+    """GCS bucket persisting FastMCP's OAuth state across instance restarts.
+
+    Without it every Cloud Run cold start / deploy wipes the in-container
+    token store and MCP clients must re-authenticate. Mounted into the
+    service via a Cloud Storage volume; FASTMCP_HOME points at the mount.
+    """
+    pid = state["project_id"]
+    bucket = f"{pid}-oauth-state"
+    state["oauth_state_bucket"] = bucket
+
+    check = subprocess.run(
+        ["gcloud", "storage", "buckets", "describe", f"gs://{bucket}",
+         f"--project={pid}"],
+        capture_output=True,
+    )
+    if check.returncode == 0:
+        success(f"bucket gs://{bucket} already exists")
+        return
+
+    gcloud([
+        "storage", "buckets", "create", f"gs://{bucket}",
+        f"--project={pid}", f"--location={state['region']}",
+        "--uniform-bucket-level-access",
+    ])
+    sa = f"{state['project_number']}-compute@developer.gserviceaccount.com"
+    gcloud([
+        "storage", "buckets", "add-iam-policy-binding", f"gs://{bucket}",
+        f"--member=serviceAccount:{sa}",
+        "--role=roles/storage.objectAdmin",
+    ])
+    success(f"created gs://{bucket}, granted objectAdmin to runtime SA")
+
+
 @step("Deploy to Cloud Run")
 def step_deploy(state, args):
     pid = state["project_id"]
     region = state["region"]
     service = state["service_name"]
     base_url = state["mcp_base_url"]
+    bucket = state.get("oauth_state_bucket", f"{pid}-oauth-state")
 
     info("Building image with Cloud Build and rolling out (~3-5 min)...")
+    info(
+        "💰 The image (~1.4 GB, includes headless Chromium) exceeds Artifact "
+        "Registry's free 0.5 GB → ~$0.10/month."
+    )
     cmd = [
         "gcloud", "run", "deploy", service,
         f"--project={pid}",
@@ -626,8 +822,26 @@ def step_deploy(state, args):
         "--source=.",
         "--allow-unauthenticated",
         "--port=8080",
+        # get_events runs headless Chromium in-container: it needs the
+        # memory bump, and low concurrency keeps simultaneous browsers off one
+        # instance (the agent fans out one call per venue website).
+        "--memory=2Gi",
+        "--cpu=2",
+        "--timeout=300",
+        "--concurrency=4",
+        # Single instance: OAuth session state lives in the GCS-fuse bucket,
+        # which lacks instant cross-instance read-after-write consistency.
+        # Multiple instances → some /mcp calls 401 → connector auth loops.
+        # One instance owns all state; fine for a personal single-user server.
+        "--max-instances=1",
         "--update-secrets=" + ",".join(f"{n}={n}:latest" for n in SECRET_NAMES),
-        f"--set-env-vars=MCP_BASE_URL={base_url}",
+        # Persist OAuth state (client registrations, refresh tokens) so
+        # sessions survive restarts; FASTMCP_HOME points at the GCS mount.
+        f"--add-volume=name=oauth-state,type=cloud-storage,bucket={bucket}",
+        "--add-volume-mount=volume=oauth-state,mount-path=/mnt/oauth-state",
+        f"--set-env-vars=MCP_BASE_URL={base_url},FASTMCP_HOME=/mnt/oauth-state,"
+        f"CONNECTOR_LANGUAGE={state.get('language', 'en')},"
+        f"DEFAULT_TRAVEL_MODE={state.get('travel_mode', 'TRANSIT')}",
     ]
     _log_cmd(cmd)
     result = subprocess.run(cmd, cwd=REPO_ROOT)
@@ -658,6 +872,40 @@ def step_smoke(state, args):
             warn(f"unexpected HTTP {e.code}")
     except urllib.error.URLError as e:
         warn(f"could not reach service: {e}")
+
+
+# ---------- Preflight manifest ----------
+
+
+def print_manifest(args) -> None:
+    """Everything the installer creates, the manual steps, and the money —
+    on one screen. Real risks and decision points only."""
+    print(color("  What gets created (in YOUR GCP project)", Colors.BOLD))
+    print(
+        f"    {len(REQUIRED_APIS)} APIs enabled · 2 restricted API keys "
+        f"(Maps, Gemini) · {len(SECRET_NAMES)} secrets\n"
+        f"    OAuth-state bucket · Cloud Run service '{args.service_name}' "
+        f"({args.region})"
+    )
+    print()
+    print(color("  What YOU do in a browser (Google has no API for these)", Colors.BOLD))
+    print(
+        "    1. Link a billing account (if not already linked)\n"
+        "    2. OAuth consent screen + client — ~4 min, guided\n"
+        "    Everything else (keys, secrets, deploy) is automated."
+    )
+    print()
+    print(color("  💰 What can cost money", Colors.BOLD))
+    print(
+        "    • Gemini (event scraping) — THE DECISION THAT MATTERS:\n"
+        "      free tier = 20 requests/day ≈ 1-2 event searches, then errors.\n"
+        "      With billing on the key: ~$0.05-0.15 per event search.\n"
+        "    • Container image (~1.4 GB) exceeds Artifact Registry's free\n"
+        "      0.5 GB → ~$0.10/month.\n"
+        "    • Maps searches & routing — free monthly caps cover personal use.\n"
+        "    • Cloud Run / Build / secrets / bucket — free tier at this scale."
+    )
+    print()
 
 
 # ---------- Main ----------
@@ -692,8 +940,20 @@ def main():
         help="Comma-separated emails allowed to authenticate (default: prompt)",
     )
     parser.add_argument(
+        "--language",
+        help="BCP-47 code all results are returned in (default: prompt, 'en')",
+    )
+    parser.add_argument(
+        "--travel-mode",
+        help="Default get_route mode: TRANSIT, DRIVE, or WALK (default: prompt)",
+    )
+    parser.add_argument(
         "--reset", action="store_true",
         help="Discard saved state and start over",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Print what would be installed (and what it costs), then exit",
     )
     args = parser.parse_args()
 
@@ -714,6 +974,15 @@ def main():
     print(color(f"State file: {STATE_PATH}", Colors.DIM))
     print(color(f"Logs:       {LOG_PATH}", Colors.DIM))
     print()
+
+    fresh_install = not any(k.startswith("_step_") for k in state)
+    if args.dry_run or fresh_install:
+        print_manifest(args)
+        if args.dry_run:
+            sys.exit(0)
+        if not confirm("Proceed?", default=True):
+            sys.exit(0)
+        print()
 
     total = len(STEPS)
     for i, (title, fn) in enumerate(STEPS, 1):
@@ -758,6 +1027,12 @@ def main():
     print()
     print("  When prompted, sign in with one of these allowed emails:")
     print(f"    {state.get('allowed_emails', '(see Secret Manager)')}")
+    print()
+    print(
+        "  💰 Standing cost ≈ $0.10/month. Event searches bill Gemini usage "
+        "(~$0.05-0.15 each\n     with billing enabled on the key; without it, "
+        "1-2 free searches/day)."
+    )
     print()
     print(color("  To uninstall: python uninstall.py", Colors.DIM))
     print()

@@ -17,13 +17,18 @@ WORKDIR /build
 COPY mcp_server/pyproject.toml ./
 # Install runtime deps into an isolated prefix that we copy into the final image.
 RUN pip install --prefix=/install \
-        "fastmcp>=2.3" "httpx>=0.27" "pydantic>=2.6" "python-dotenv>=1.0"
+        "fastmcp>=2.3" "httpx>=0.27" "pydantic>=2.6" "python-dotenv>=1.0" \
+        "playwright>=1.49" "html2text>=2024.2.26" "pillow>=10.0"
 
 # ---- runtime ----
 FROM python:3.13-slim AS runtime
 
+# PLAYWRIGHT_BROWSERS_PATH must be set for BOTH the install below and the
+# server at runtime — it puts Chromium in a world-readable path outside
+# root's home so the non-root appuser can exec it.
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 # Run as non-root for defence in depth.
 RUN useradd --create-home --uid 1000 appuser
@@ -33,8 +38,15 @@ WORKDIR /app
 # Pull the prepared site-packages tree from the builder stage.
 COPY --from=builder /install /usr/local
 
-# Application code (flat layout — server.py imports google_maps).
-COPY mcp_server/server.py mcp_server/google_maps.py ./
+# Headless Chromium + its OS packages for find_events. --with-deps runs
+# apt-get, so this must happen before USER appuser.
+RUN playwright install --with-deps chromium \
+    && chmod -R a+rX /ms-playwright \
+    && rm -rf /var/lib/apt/lists/*
+
+# Application code (flat layout — server.py imports the sibling modules).
+COPY mcp_server/server.py mcp_server/google_maps.py \
+     mcp_server/gemini.py mcp_server/scraper.py mcp_server/events_pipeline.py ./
 
 USER appuser
 

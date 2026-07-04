@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# One-time setup: push the four secrets the Cloud Run service needs to
+# One-time setup: push the five secrets the Cloud Run service needs to
 # Secret Manager, and grant the runtime service account read access.
 #
 # Reads the OAuth/Maps secrets from mcp_server/.env (so they aren't typed
@@ -62,6 +62,7 @@ echo "==> Project: $PROJECT_ID"
 echo "==> Pushing secrets..."
 
 read_env GOOGLE_MAPS_API_KEY        | upsert_secret GOOGLE_MAPS_API_KEY
+read_env GEMINI_API_KEY             | upsert_secret GEMINI_API_KEY
 read_env GOOGLE_OAUTH_CLIENT_ID     | upsert_secret GOOGLE_OAUTH_CLIENT_ID
 read_env GOOGLE_OAUTH_CLIENT_SECRET | upsert_secret GOOGLE_OAUTH_CLIENT_SECRET
 printf '%s' "$ALLOWED_EMAILS"       | upsert_secret GOOGLE_OAUTH_ALLOWED_EMAILS
@@ -71,7 +72,7 @@ PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format='value(projectN
 RUNTIME_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
 
 echo "==> Granting roles/secretmanager.secretAccessor to $RUNTIME_SA on each secret..."
-for name in GOOGLE_MAPS_API_KEY GOOGLE_OAUTH_CLIENT_ID GOOGLE_OAUTH_CLIENT_SECRET GOOGLE_OAUTH_ALLOWED_EMAILS; do
+for name in GOOGLE_MAPS_API_KEY GEMINI_API_KEY GOOGLE_OAUTH_CLIENT_ID GOOGLE_OAUTH_CLIENT_SECRET GOOGLE_OAUTH_ALLOWED_EMAILS; do
     gcloud secrets add-iam-policy-binding "$name" \
         --member="serviceAccount:${RUNTIME_SA}" \
         --role="roles/secretmanager.secretAccessor" \

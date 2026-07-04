@@ -7,6 +7,7 @@ client config like claude_desktop_config.json.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import sys
@@ -23,6 +24,7 @@ from fastmcp.server.auth.providers.google import (
 )
 from pydantic import BaseModel, Field
 
+from events_pipeline import _is_social, check_websites_for_events
 from google_maps import (
     GoogleMapsError,
     compute_route,
@@ -38,6 +40,24 @@ if not API_KEY:
     raise RuntimeError(
         "GOOGLE_MAPS_API_KEY is not set. Copy .env.example to .env and fill it in, "
         "or export the variable before starting the server."
+    )
+
+# Only get_events needs this; checked at call time (not import time) so
+# deployments without the secret keep serving the deterministic tools.
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+
+# BCP-47 code all results come back in, wherever in the world the places are:
+# Google localizes Places/Routes responses natively, and event extraction
+# translates while it extracts. Set at install time; env-overridable.
+LANGUAGE = os.environ.get("CONNECTOR_LANGUAGE", "en")
+
+# Owner's default travel mode when the user doesn't state one (a New Yorker
+# wants TRANSIT; a midwestern driver wants DRIVE). Set at install time.
+DEFAULT_TRAVEL_MODE = os.environ.get("DEFAULT_TRAVEL_MODE", "TRANSIT")
+if DEFAULT_TRAVEL_MODE not in ("WALK", "TRANSIT", "DRIVE"):
+    raise RuntimeError(
+        f"DEFAULT_TRAVEL_MODE must be WALK, TRANSIT, or DRIVE, "
+        f"got {DEFAULT_TRAVEL_MODE!r}"
     )
 
 
@@ -117,6 +137,12 @@ def _build_auth_provider() -> GoogleProvider | OAuthProxy | None:
         redirect_path="/auth/callback",
         # Match GoogleProvider's defaults so refresh tokens are issued.
         extra_authorize_params={"access_type": "offline", "prompt": "consent"},
+        # Google doesn't stamp an expiry on its refresh tokens, so this
+        # fallback IS the session length: reconnect at most every 30 days.
+        # NOTE: this only holds if OAuth state survives instance restarts —
+        # in production FASTMCP_HOME must point at the GCS-backed volume
+        # (see infra/deploy.sh), else every cold start forces a reconnect.
+        fallback_refresh_token_expiry_seconds=30 * 24 * 3600,
     )
 
 
@@ -125,16 +151,72 @@ mcp = FastMCP(
     auth=_build_auth_provider(),
     instructions=(
         "Use this server's tools whenever the user asks about real places, "
-        "their attributes (hours, ratings, addresses, price tier), or how to "
+        "their attributes (hours, ratings, addresses, websites), or how to "
         "travel between locations. "
         "Always call `search_nearby_places` for place-discovery questions even "
         "when the named area is famous (e.g. 'bookstores in Soho'); rely on "
         "Google's live data, not prior knowledge, because hours, ratings, "
         "and listings change. "
         "Always call `get_route` for any 'how do I get to X' / 'how long does "
-        "it take to walk/take transit to Y' / 'when should I leave to arrive "
-        "by Z' question — training-data answers on transit schedules and live "
-        "traffic are stale. "
+        "it take to walk/drive/take transit to Y' / 'when should I leave to "
+        "arrive by Z' question — training-data answers on transit schedules "
+        "and live traffic are stale. Omit travel_mode unless the user states "
+        "one; the server fills in the owner's default. "
+        "PLACES vs SCHEDULED EVENTS — decide BEFORE reaching for `get_events`. "
+        "In casual speech an 'event' is often just an outing to a standing "
+        "place (going out to dinner, drinks, a driving range, bowling): the "
+        "venue delivers the experience whenever the user shows up, so "
+        "`search_nearby_places` alone answers it — instantly. Reserve "
+        "`get_events` (slow: minutes) for INDEPENDENTLY SCHEDULED happenings "
+        "that exist only at a specific date/time: live shows, comedy nights, "
+        "trivia, classes, tastings, gallery openings, markets, festivals, "
+        "watch parties. Read three signals: "
+        "(a) ON-DEMAND vs SCHEDULED — can the activity be enjoyed at a time "
+        "of the user's choosing? Then places suffice. "
+        "(b) WHOSE TIMEFRAME — 'dinner Saturday' marks when THEY plan to go "
+        "(restaurants don't schedule your dinner → places only), while "
+        "'what's going on Saturday' asks about venue programming → events. "
+        "(c) NOVELTY / SOCIAL INTENT — meeting people, making friends, "
+        "'something different/special': scheduled events are better settings "
+        "for novel social interaction than walk-in venues → include events. "
+        "When intent is MIXED or unclear ('fun date night ideas this "
+        "weekend', 'things to do'), do both and blend: places give the "
+        "instant anchors, events add the special/scheduled layer — include "
+        "the events pass when a timeframe or novelty/social signal is "
+        "present. With NO such signal, answer from places and OFFER to check "
+        "venues' event calendars as a follow-up instead of silently spending "
+        "minutes scraping. "
+        "EVENT DISCOVERY, when you do run it, is a three-step composition "
+        "YOU orchestrate ('fun date night ideas near Williamsburg this "
+        "weekend'): "
+        "(1) DECOMPOSE the intent into 3-6 concrete venue categories that "
+        "are LIKELY TO POST EVENTS on their websites — Google matches "
+        "queries literally, so 'fun date night ideas' finds nothing while "
+        "['wine bars', 'comedy clubs', 'live music venues', 'art galleries', "
+        "'breweries'] finds everything — and pass them ALL to ONE "
+        "`search_nearby_places` call (they run concurrently and merge, with "
+        "a Matched line showing which queries surfaced each place). "
+        "(2) SELECT the 5-8 BEST places yourself: read each result's Types, "
+        "Summary, and Reviews-say lines and keep only venues that fit the "
+        "user's intent and plausibly host events — don't scrape a bodega "
+        "because it matched 'wine bars', and don't send every result: event "
+        "extraction is rate-limited, so beyond ~8 sites you get quota errors "
+        "back instead of events. "
+        "(3) Make ONE `get_events` call passing the selected Website lines "
+        "(hard cap 8) — the server scrapes them concurrently in a shared "
+        "browser and returns {website: events | {error}} in roughly the "
+        "time of the slowest site (20 seconds to ~3 minutes). Skip places with no "
+        "Website line; social-media URLs (instagram/facebook/linktree) come "
+        "back as per-site errors. If a site errors with a quota message, "
+        "wait ~60 seconds before retrying it. "
+        "Then filter, rank, and present the events yourself: you own date "
+        "filtering (convert 'this weekend' to concrete dates and compare "
+        "against each event's start_date / start_date_numeric) and you own "
+        "joining events back to place details (address, rating, maps_url) "
+        "from step 1. Tell the user you're searching before starting — the "
+        "full flow can take a few minutes, and some sites legitimately fail "
+        "(bot walls) or have no events page; report what you could and "
+        "couldn't check. "
         "Skip these tools only when the user is asking a general/historical "
         "question that has no live-data component (e.g. 'when was the "
         "Brooklyn Bridge built?')."
@@ -145,6 +227,52 @@ mcp = FastMCP(
 class LatLng(BaseModel):
     lat: float = Field(ge=-90, le=90, description="Latitude in decimal degrees.")
     lng: float = Field(ge=-180, le=180, description="Longitude in decimal degrees.")
+
+
+def _format_places_markdown(
+    places: list[dict[str, Any]], *, show_matches: bool = False
+) -> str:
+    """Render mapped place dicts as compact markdown for the client LLM.
+
+    Lines with no value are omitted entirely — absence means Google doesn't
+    have that datum (e.g. no Website line = nothing to feed `get_events`).
+    With show_matches, each place lists which queries surfaced it.
+    """
+    if not places:
+        return "No places found. Try broader queries or a larger radius."
+
+    sections: list[str] = []
+    for i, p in enumerate(places, 1):
+        lines = [f"## {i}. {p['name']}"]
+
+        def add(label: str, value: Any) -> None:
+            if value:
+                # Collapse embedded newlines (Google's AI summaries contain
+                # paragraph breaks) so each field stays one bullet line.
+                lines.append(f"- **{label}:** {' '.join(str(value).split())}")
+
+        if show_matches:
+            add("Matched", ", ".join(p.get("matched_queries") or []))
+        add("Address", p["address"])
+        if p["lat"] is not None and p["lng"] is not None:
+            add("Coordinates", f"{p['lat']:.5f}, {p['lng']:.5f}")
+        if p["rating"] is not None:
+            add("Rating", f"{p['rating']} ({p['user_rating_count'] or 0} ratings)")
+        add("Types", ", ".join(p["types"]))
+        add("Hours", "; ".join(p["weekday_hours"]))
+        add("Summary", p["generative_summary"])
+        add("Reviews say", p["review_summary"])
+        add("Phone", p["phone_number"])
+        if p["website"] and _is_social(p["website"]):
+            # Google sometimes lists a linktree/Instagram as the "website".
+            # Flag it so the agent doesn't waste a get_events slot on it.
+            add("Website", f"{p['website']} (social/link-tree — get_events cannot scrape this)")
+        else:
+            add("Website", p["website"])
+        add("Map", p["maps_url"])
+        add("Place ID", p["place_id"])
+        sections.append("\n".join(lines))
+    return "\n\n".join(sections)
 
 
 def _waypoint_from(value: str | LatLng | dict[str, Any]) -> dict[str, Any]:
@@ -194,15 +322,21 @@ def _normalize_timestamp(value: str | None) -> str | None:
 
 
 async def search_nearby_places(
-    query: Annotated[
-        str,
+    queries: Annotated[
+        list[str],
         Field(
+            min_length=1,
+            max_length=8,
             description=(
-                "Free-text description of what to look for. Categories, types, "
-                "or keywords work; specifics work better than generics. "
-                "Examples: 'independent bookstores', 'late-night ramen', "
-                "'rooftop bars with a view'."
-            )
+                "One or more free-text searches, run concurrently and merged "
+                "(deduped). Google matches these fairly literally, so each "
+                "entry should be a CONCRETE venue category or keyword — "
+                "'independent bookstores', 'late-night ramen', 'rooftop bars "
+                "with a view'. DECOMPOSE broad or vague intents into several "
+                "concrete queries instead of passing the user's phrasing "
+                "through: 'fun date night ideas' → ['wine bars', 'comedy "
+                "clubs', 'live music venues', 'art galleries']."
+            ),
         ),
     ],
     coordinates: Annotated[
@@ -248,23 +382,46 @@ async def search_nearby_places(
         Field(
             ge=1,
             le=20,
-            description="Maximum places to return. Google caps the response at 20.",
+            description=(
+                "Maximum places to return PER QUERY before merging. Google "
+                "caps each query's response at 20."
+            ),
         ),
     ] = 10,
-) -> list[dict[str, Any]]:
-    """Find places matching a free-text query, near a coordinate or in a named area.
+) -> str:
+    """Find places matching free-text queries, near a coordinate or in a named area.
 
     Use this for any "what's around here?" / "are there good X near Y?" /
-    "best Z in W" question. Returns a ranked list of real places with
-    addresses, ratings, price tier, and Google Maps links — the calling
-    model formats that for the user; the tool itself is deterministic.
+    "best Z in W" question. Returns a markdown-formatted, ranked list of
+    real places with addresses, ratings, websites, and Google Maps links —
+    the calling model reworks that for the user; the tool itself is
+    deterministic.
 
     Trigger phrases that should call this tool:
       "what's around <X>?", "find me <category> near <Y>",
       "best <category> in <area>", "any good <thing> nearby?",
       "where's the closest <thing>?", "recommend a <thing> in <area>"
     Reach for this tool even when the area is famous — Google's listings,
-    hours, ratings, and price tiers change in ways prior knowledge can't track.
+    hours, and ratings change in ways prior knowledge can't track.
+
+    Google matches queries fairly literally, so translate what the user
+    MEANS into what Google can FIND: pass several concrete venue-category
+    queries in one call rather than one vague query. All queries run
+    concurrently against the same location anchor; results are merged,
+    deduplicated, and each place notes which queries matched it.
+
+    This tool alone fully answers "event" phrasing that really means an
+    outing to a standing place — dinner out, drinks, a driving range: the
+    venue works whenever the user shows up, so no event scrape is needed.
+
+    This is also STEP 1 of event discovery (for independently SCHEDULED
+    happenings): each result carries a Website line, and passing those
+    websites to `get_events` in one batched call yields the venues'
+    scheduled events. For that flow, decompose the user's intent into venue
+    categories LIKELY TO POST EVENTS ('live music venues', 'comedy clubs',
+    'breweries' — not 'concerts'), then use each result's Types / Summary /
+    Reviews-say lines to decide which places are actually relevant before
+    scraping them.
 
     Anti-patterns (when NOT to use this tool):
       - "Tell me about <area>" / "What's <area> like?" — these invite a
@@ -279,20 +436,23 @@ async def search_nearby_places(
         named a place but no coordinates are available.
     Passing neither raises ValueError; passing both also raises ValueError.
 
-    Each returned place contains:
-      name, address, lat, lng, rating, user_rating_count, price_level,
-      types (Google's place-type taxonomy, e.g. ["coffee_shop", "cafe"]),
-      weekday_hours (array of formatted strings like "Monday: 8:00 AM – 4:00 PM"),
-      reviews (array of review text strings, up to 5 most-relevant per place),
-      phone_number (international format, e.g. "+1 201-993-9028"),
-      place_id, maps_url
+    Returns markdown: one `## <n>. <name>` section per place with bullet
+    lines for Address, Coordinates (lat, lng), Rating (with rating count),
+    Types (Google's place-type taxonomy), Hours, Summary (Google's AI-written
+    overview), Reviews say (AI digest of reviews), Phone, Website, Map, and
+    Place ID. The Website URL is what you pass to `get_events` to discover
+    the place's scheduled events.
 
     Notes:
       - Results are *biased* to the supplied area, not strictly clipped —
         Google may surface adjacent places if they match the query well.
-      - Many fields can be None or empty: places Google hasn't classified
-        won't have rating/price_level; many places have no reviews or
-        listed phone number. Never assume a value is present.
+      - Missing data means a missing line: places without a listed website
+        have no Website bullet, unclassified places have no Rating, and the
+        AI summaries only exist where Google has generated them. Never
+        assume a line is present.
+      - With multiple queries, each place's "Matched" line lists which of
+        your queries surfaced it — a relevance signal for choosing what to
+        pass to `get_events`.
       - Always uses Google's Places (New) `searchText` endpoint. No
         Geocoding API call is made.
     """
@@ -303,8 +463,8 @@ async def search_nearby_places(
             "Provide `coordinates` OR `area_name`, not both — they conflict."
         )
 
+    location_bias = None
     if coordinates is not None:
-        text_query = query
         location_bias = {
             "circle": {
                 "center": {
@@ -314,32 +474,45 @@ async def search_nearby_places(
                 "radius": float(radius_m),
             }
         }
-    else:
-        text_query = f"{query} in {area_name}"
-        location_bias = None
 
-    try:
-        raw_places = await search_places_by_text(
+    async def _run_query(q: str) -> list[dict[str, Any]]:
+        text_query = q if coordinates is not None else f"{q} in {area_name}"
+        return await search_places_by_text(
             api_key=API_KEY,
             text_query=text_query,
             location_bias=location_bias,
             max_results=max_results,
+            language_code=LANGUAGE,
         )
-    except GoogleMapsError as exc:
-        raise RuntimeError(str(exc)) from exc
+
+    outcomes = await asyncio.gather(
+        *(_run_query(q) for q in queries), return_exceptions=True
+    )
+    failures = [o for o in outcomes if isinstance(o, BaseException)]
+    if len(failures) == len(queries):
+        raise RuntimeError(str(failures[0])) from failures[0]
+
+    # Merge: first appearance wins (query order, then Google's ranking);
+    # every query that surfaced a place is recorded as a relevance signal.
+    raw_places: list[dict[str, Any]] = []
+    matched_queries: dict[str, list[str]] = {}
+    seen_ids: dict[str, dict[str, Any]] = {}
+    for q, outcome in zip(queries, outcomes):
+        if isinstance(outcome, BaseException):
+            continue
+        for p in outcome:
+            pid = p.get("id") or f"_anon_{len(seen_ids)}"
+            if pid not in seen_ids:
+                seen_ids[pid] = p
+                matched_queries[pid] = []
+                raw_places.append(p)
+            matched_queries[pid].append(q)
 
     results: list[dict[str, Any]] = []
     for p in raw_places:
         loc = p.get("location") or {}
         display = p.get("displayName") or {}
         hours = (p.get("regularOpeningHours") or {}).get("weekdayDescriptions") or []
-        # Google returns review objects with text/rating/author/timestamp.
-        # Flatten to plain text strings to mirror the built-in places tool's shape.
-        reviews = [
-            (r.get("text") or {}).get("text")
-            for r in (p.get("reviews") or [])
-            if (r.get("text") or {}).get("text")
-        ]
         results.append(
             {
                 "name": display.get("text"),
@@ -348,16 +521,24 @@ async def search_nearby_places(
                 "lng": loc.get("longitude"),
                 "rating": p.get("rating"),
                 "user_rating_count": p.get("userRatingCount"),
-                "price_level": p.get("priceLevel"),
                 "types": p.get("types") or [],
                 "weekday_hours": hours,
-                "reviews": reviews,
+                # Gemini-generated place overview + review digest. Both are
+                # nested LocalizedText objects; flatten to plain strings.
+                "generative_summary": (
+                    (p.get("generativeSummary") or {}).get("overview") or {}
+                ).get("text"),
+                "review_summary": (
+                    (p.get("reviewSummary") or {}).get("text") or {}
+                ).get("text"),
                 "phone_number": p.get("internationalPhoneNumber"),
+                "website": p.get("websiteUri"),
                 "place_id": p.get("id"),
                 "maps_url": p.get("googleMapsUri"),
+                "matched_queries": matched_queries.get(p.get("id"), []),
             }
         )
-    return results
+    return _format_places_markdown(results, show_matches=len(queries) > 1)
 
 
 async def get_route(
@@ -380,15 +561,18 @@ async def get_route(
         ),
     ],
     travel_mode: Annotated[
-        Literal["WALK", "TRANSIT"],
+        Literal["WALK", "TRANSIT", "DRIVE"] | None,
         Field(
             description=(
-                "How the user is travelling. v1 supports 'WALK' (on foot) "
-                "and 'TRANSIT' (public transit: bus, subway, train, ferry). "
-                "DRIVE and BICYCLE are not supported yet."
+                "How the user is travelling: 'WALK' (on foot), 'TRANSIT' "
+                "(public transit: bus, subway, train, ferry), or 'DRIVE' "
+                "(car, with live traffic). OMIT this unless the user states "
+                "or implies a mode — the server fills in the mode the owner "
+                "chose at install time (a New Yorker defaults to TRANSIT, a "
+                "suburban driver to DRIVE)."
             )
         ),
-    ],
+    ] = None,
     arrival_time: Annotated[
         str | None,
         Field(
@@ -448,9 +632,15 @@ async def get_route(
         this tool; if they want as-the-crow-flies, answer from general knowledge.
       - "What's the address of <X>?" — that's `search_nearby_places` territory.
 
+    Mode resolution: omit `travel_mode` and the server applies the owner's
+    installed default. Only set it when the user states or implies a mode
+    ("drive", "walk", "subway").
+
     Time anchoring (mutually exclusive — provide at most one):
-      - `arrival_time`: server returns a derived `departure_time` such that
-        the user lands by that moment, accounting for traffic.
+      - `arrival_time` (TRANSIT ONLY — a Routes API limitation): server
+        returns a derived `departure_time` such that the user lands by that
+        moment. For WALK/DRIVE "arrive by" questions, get the route with no
+        time anchor and subtract its duration yourself.
       - `departure_time`: server returns a derived `arrival_time` based on
         the route's traffic-aware duration.
       - Neither: "leave now" — `departure_time` is set to current UTC and
@@ -477,6 +667,15 @@ async def get_route(
     if arrival_time and departure_time:
         raise ValueError("Provide at most one of `arrival_time` or `departure_time`.")
 
+    travel_mode = travel_mode or DEFAULT_TRAVEL_MODE
+    if arrival_time and travel_mode != "TRANSIT":
+        raise ValueError(
+            "arrival_time is only supported for TRANSIT (Google Routes API "
+            f"limitation; resolved mode was {travel_mode}). Use "
+            "departure_time, or estimate the departure yourself from the "
+            "route duration."
+        )
+
     arrival_time = _normalize_timestamp(arrival_time)
     departure_time = _normalize_timestamp(departure_time)
 
@@ -489,6 +688,7 @@ async def get_route(
             arrival_time=arrival_time,
             departure_time=departure_time,
             transit_routing_preference=transit_preferences,
+            language_code=LANGUAGE,
         )
     except GoogleMapsError as exc:
         raise RuntimeError(str(exc)) from exc
@@ -540,8 +740,101 @@ async def get_route(
     }
 
 
+async def get_events(
+    websites: Annotated[
+        list[str],
+        Field(
+            min_length=1,
+            max_length=8,
+            description=(
+                "Venue website URLs to check, e.g. the Website lines from "
+                "`search_nearby_places` results. Pass your selections in ONE "
+                "call — they are scraped concurrently in a shared browser. "
+                "HARD CAP 8, and 5-6 is the sweet spot: each site costs LLM "
+                "extraction calls against a rate-limited quota, so curate the "
+                "MOST relevant venues (by Types/Summary/rating) instead of "
+                "sending every search result. Must be the venues' own http(s) "
+                "sites; social-media/link-tree URLs (instagram, facebook, "
+                "linktr.ee, ...) come back as per-site errors."
+            ),
+        ),
+    ],
+) -> dict[str, Any]:
+    """Scrape venue websites and return each one's scheduled public events.
+
+    Per site: load the homepage with a headless browser → locate its
+    events/calendar page (link heuristics, LLM fallback) → extract structured
+    events with a multimodal LLM reading the page text and images. All sites
+    run concurrently as tabs in one shared browser, so one call with 10
+    websites takes roughly as long as the slowest site (20 seconds to ~3 minutes
+    total), NOT 10x.
+
+    HOW THIS COMPOSES: for "what's happening in <area>?" questions, first
+    call `search_nearby_places` with venue-flavored queries — each result
+    includes a Website line — then CURATE: pick the 5-8 venues most relevant
+    to the user's intent and pass those websites to this tool in a SINGLE
+    call. Do not shovel every search result in; beyond ~8 sites the
+    extraction quota rate-limits and sites come back as errors instead of
+    events. You then own the aggregation: filter events by date (compare
+    start_date / start_date_numeric against the user's timeframe), join
+    events back to the place details from step 1 (address, rating,
+    maps_url), and rank.
+
+    Returns a dict keyed by each input URL. Each value is EITHER:
+      - a list of events (empty = no events page / no listed events — a
+        normal outcome, not a failure), OR
+      - {"error": "<reason>"} when that site couldn't be checked
+        (bot-challenge wall, social-media URL, extraction failure, time
+        budget exhausted). Relay these as "couldn't check X" rather than
+        "X has no events".
+
+    Each event follows the Vibrant/TypeSense event schema (the events-page
+    subset):
+      event_title_derived      descriptive title, ≤70 chars
+      event_description_derived concise description
+      start_date               "YYYY-MM-DD", or "" when undeterminable
+      start_date_numeric       int YYYYMMDD for range comparisons, or null
+      start_time               "HH:MM:SS" 24-hour local, or ""
+      price                    e.g. "$19.99", or ""
+      keywords                 5 comma-separated keywords
+      emoji                    single emoji
+      event_page_url           the page the event was extracted from
+
+    A recurring event returns only its next occurrence; multi-day festivals
+    appear once per day for up to three days; past/archived events are
+    filtered out.
+
+    Anti-patterns (when NOT to use this tool):
+      - Place discovery ("what bars are in Soho?") — `search_nearby_places`.
+      - "Event" phrasing that really means an outing to a standing place —
+        dinner out, drinks, a driving range, bowling. If the venue delivers
+        the experience whenever the user shows up, `search_nearby_places`
+        alone answers it instantly; a reservation is not a scheduled event.
+        This tool is for independently scheduled happenings (shows, trivia,
+        classes, openings, festivals) that exist only at a specific
+        date/time.
+      - Ticketmaster-scale arena events — this scrapes venue websites, not
+        ticketing platforms.
+      - Anything other than venues' own website URLs.
+    """
+    if not GEMINI_API_KEY:
+        raise RuntimeError(
+            "GEMINI_API_KEY is not set on the server — get_events needs "
+            "a Gemini (AI Studio) key. Add it to .env locally or Secret "
+            "Manager in production."
+        )
+
+    return await check_websites_for_events(
+        websites,
+        gemini_api_key=GEMINI_API_KEY,
+        language=LANGUAGE,
+        today=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+    )
+
+
 mcp.tool(search_nearby_places)
 mcp.tool(get_route)
+mcp.tool(get_events)
 
 
 def main() -> None:

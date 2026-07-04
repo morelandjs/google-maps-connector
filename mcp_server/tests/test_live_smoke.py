@@ -17,6 +17,7 @@ business changes (a cafe closing, a route detour).
 from __future__ import annotations
 
 import os
+import re
 
 import pytest
 
@@ -44,52 +45,27 @@ pytestmark = [
 
 
 async def test_search_nearby_places_live_against_google():
-    """Search a globally well-known area; verify response shape end-to-end."""
-    results = await server.search_nearby_places(
-        query="coffee",
+    """Search a globally well-known area; verify markdown shape end-to-end."""
+    out = await server.search_nearby_places(
+        queries=["coffee"],
         area_name="Times Square, New York",
         max_results=3,
     )
 
-    assert isinstance(results, list)
-    assert len(results) >= 1, "Expected at least one coffee result near Times Square"
+    assert isinstance(out, str)
+    assert out.startswith("## 1. "), "Expected at least one coffee result"
 
-    first = results[0]
-    # Required fields per the tool contract.
-    for key in (
-        "name",
-        "address",
-        "lat",
-        "lng",
-        "place_id",
-        "maps_url",
-        "types",
-        "weekday_hours",
-        "reviews",
-        "phone_number",
-    ):
-        assert key in first, f"missing key {key!r} in response"
+    # Must-have lines for a Times Square coffee shop.
+    for label in ("Address", "Coordinates", "Types", "Map", "Place ID"):
+        assert f"- **{label}:** " in out, f"missing {label!r} line"
 
-    # Times Square coffee shops should have at least one type and very likely
-    # opening hours and reviews — but we stay loose to avoid breaking on
-    # business-info changes.
-    assert isinstance(first["types"], list) and len(first["types"]) >= 1
-    assert isinstance(first["weekday_hours"], list)
-    assert isinstance(first["reviews"], list)
-    # phone_number may legitimately be None for some places.
-
-    # Sanity-check types on the must-have fields. Optional fields (rating,
-    # price_level) may legitimately be None for places Google hasn't classified.
-    assert isinstance(first["name"], str) and first["name"]
-    assert isinstance(first["address"], str) and first["address"]
-    assert isinstance(first["place_id"], str) and first["place_id"]
-    assert isinstance(first["maps_url"], str) and first["maps_url"].startswith("http")
-    assert isinstance(first["lat"], (int, float))
-    assert isinstance(first["lng"], (int, float))
     # Times Square is roughly (40.76, -73.99); make sure we're at least on the
     # right continent — guards against a lat/lng swap or unit confusion.
-    assert 40.0 < first["lat"] < 41.0
-    assert -75.0 < first["lng"] < -73.0
+    coords = re.search(r"- \*\*Coordinates:\*\* (-?[\d.]+), (-?[\d.]+)", out)
+    assert coords, "missing Coordinates line"
+    lat, lng = float(coords.group(1)), float(coords.group(2))
+    assert 40.0 < lat < 41.0
+    assert -75.0 < lng < -73.0
 
 
 async def test_get_route_live_against_google():
@@ -127,3 +103,61 @@ async def test_get_route_live_against_google():
     # No times provided → both should be derived ("leave now" semantics).
     assert result["departure_time"] is not None
     assert result["arrival_time"] is not None
+
+
+HAS_REAL_GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "") not in {
+    "",
+    "TEST_GEMINI_KEY",
+    "YOUR_AI_STUDIO_KEY",
+}
+
+
+@pytest.mark.skipif(
+    not HAS_REAL_GEMINI_KEY,
+    reason="GEMINI_API_KEY missing or set to a placeholder — "
+    "fill .env with a real AI Studio key before running live get_events",
+)
+async def test_place_search_then_get_events_live():
+    """The composed agent flow, live: find venues, then check all their
+    websites in one batched call.
+
+    Content is nondeterministic (live websites, live model), so assertions
+    are structural only. Zero events and per-site errors (bot walls) are
+    legitimate outcomes; every site erroring IS a regression.
+    """
+    places_md = await server.search_nearby_places(
+        queries=["live music venues and bars"],
+        area_name="Williamsburg, Brooklyn",
+        max_results=5,
+    )
+    candidates = re.findall(r"- \*\*Website:\*\* (\S+)", places_md)
+    assert candidates, "expected at least one venue with a website"
+
+    result = await server.get_events(websites=candidates[:3])
+    assert set(result) == set(candidates[:3])
+
+    succeeded = {
+        site: value for site, value in result.items() if isinstance(value, list)
+    }
+    failed = {site: value for site, value in result.items() if isinstance(value, dict)}
+    for value in failed.values():
+        assert value.get("error")  # failures must carry a reason
+    assert succeeded, f"every site failed: {failed}"
+
+    expected_keys = {
+        "event_title_derived",
+        "event_description_derived",
+        "start_date",
+        "start_date_numeric",
+        "start_time",
+        "price",
+        "keywords",
+        "emoji",
+        "event_page_url",
+    }
+    for events in succeeded.values():
+        for event in events:
+            assert set(event) == expected_keys
+            assert event["event_page_url"].startswith("http")
+            if event["start_date"]:
+                assert event["start_date_numeric"] is not None

@@ -58,6 +58,7 @@ async def test_search_places_sends_required_headers_and_body():
     assert body["textQuery"] == "coffee"
     assert body["maxResultCount"] == 5
     assert body["locationBias"]["circle"]["radius"] == 1500.0
+    assert body["languageCode"] == "en"  # default results language
 
     assert places[0]["id"] == "abc"
 
@@ -134,6 +135,34 @@ async def test_compute_route_sends_required_headers_and_body():
 
     assert result["distanceMeters"] == 1234
     assert result["duration"] == "600s"
+
+
+@respx.mock
+async def test_compute_route_drive_is_traffic_aware():
+    respx.post(ROUTES_COMPUTE_URL).mock(
+        return_value=httpx.Response(
+            200, json={"routes": [{"distanceMeters": 1, "duration": "1s"}]}
+        )
+    )
+    await compute_route(
+        api_key="K",
+        origin={"address": "A"},
+        destination={"address": "B"},
+        travel_mode="DRIVE",
+    )
+    body = json.loads(respx.calls.last.request.content)
+    assert body["travelMode"] == "DRIVE"
+    # DRIVE defaults to TRAFFIC_UNAWARE upstream; we must opt into traffic.
+    assert body["routingPreference"] == "TRAFFIC_AWARE"
+
+    await compute_route(
+        api_key="K",
+        origin={"address": "A"},
+        destination={"address": "B"},
+        travel_mode="WALK",
+    )
+    body = json.loads(respx.calls.last.request.content)
+    assert "routingPreference" not in body  # invalid for WALK/TRANSIT
 
 
 @respx.mock

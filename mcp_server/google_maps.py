@@ -22,12 +22,13 @@ PLACES_FIELD_MASK = ",".join(
         "places.location",
         "places.rating",
         "places.userRatingCount",
-        "places.priceLevel",
         "places.googleMapsUri",
         "places.types",
         "places.regularOpeningHours.weekdayDescriptions",
-        "places.reviews",
         "places.internationalPhoneNumber",
+        "places.websiteUri",
+        "places.generativeSummary",
+        "places.reviewSummary",
     ]
 )
 
@@ -58,10 +59,14 @@ async def search_places_by_text(
     location_bias: dict[str, Any] | None = None,
     max_results: int = 10,
     timeout: float = 10.0,
+    language_code: str = "en",
 ) -> list[dict[str, Any]]:
     body: dict[str, Any] = {
         "textQuery": text_query,
         "maxResultCount": max(1, min(max_results, 20)),
+        # Google localizes names, addresses, hours, and the AI summaries
+        # natively — no client-side translation needed.
+        "languageCode": language_code,
     }
     if location_bias is not None:
         body["locationBias"] = location_bias
@@ -92,12 +97,18 @@ async def compute_route(
     departure_time: str | None = None,
     transit_routing_preference: str | None = None,
     timeout: float = 10.0,
+    language_code: str = "en",
 ) -> dict[str, Any]:
     body: dict[str, Any] = {
         "origin": origin,
         "destination": destination,
         "travelMode": travel_mode,
+        "languageCode": language_code,  # localizes navigation instructions
     }
+    # Routes API defaults DRIVE to TRAFFIC_UNAWARE; live traffic is the whole
+    # point of asking for a drive time. Only valid for DRIVE/TWO_WHEELER.
+    if travel_mode == "DRIVE":
+        body["routingPreference"] = "TRAFFIC_AWARE"
     if arrival_time:
         body["arrivalTime"] = arrival_time
     if departure_time:

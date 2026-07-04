@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import pytest
 import respx
@@ -166,12 +168,23 @@ async def test_search_nearby_places_with_coordinates_uses_bias():
                                 "Tuesday: 8:00 AM – 4:00 PM",
                             ]
                         },
+                        # No longer in the field mask; the mapper must ignore
+                        # extra fields Google might still send.
                         "reviews": [
                             {"text": {"text": "Great coffee!"}, "rating": 5},
-                            {"text": {"text": "Cozy spot."}, "rating": 4},
-                            # A review with no text body should be filtered out.
-                            {"rating": 3},
                         ],
+                        "generativeSummary": {
+                            "overview": {
+                                "text": "A cozy neighborhood espresso bar.",
+                                "languageCode": "en",
+                            }
+                        },
+                        "reviewSummary": {
+                            "text": {
+                                "text": "Reviewers praise the flat whites.",
+                                "languageCode": "en",
+                            }
+                        },
                         "internationalPhoneNumber": "+1 555-0100",
                     }
                 ]
@@ -180,36 +193,103 @@ async def test_search_nearby_places_with_coordinates_uses_bias():
     )
 
     out = await server.search_nearby_places(
-        query="coffee",
+        queries=["coffee"],
         coordinates=server.LatLng(lat=40.7, lng=-74.0),
         radius_m=500,
         max_results=5,
     )
-    assert out == [
-        {
-            "name": "X",
-            "address": "addr",
-            "lat": 1.0,
-            "lng": 2.0,
-            "rating": 4.0,
-            "user_rating_count": 10,
-            "price_level": "PRICE_LEVEL_INEXPENSIVE",
-            "types": ["coffee_shop", "cafe"],
-            "weekday_hours": [
-                "Monday: 8:00 AM – 4:00 PM",
-                "Tuesday: 8:00 AM – 4:00 PM",
-            ],
-            "reviews": ["Great coffee!", "Cozy spot."],
-            "phone_number": "+1 555-0100",
-            "place_id": "x",
-            "maps_url": "https://maps.example/x",
-        }
-    ]
+    assert isinstance(out, str)
+    assert "## 1. X" in out
+    assert "- **Address:** addr" in out
+    assert "- **Coordinates:** 1.00000, 2.00000" in out
+    assert "- **Rating:** 4.0 (10 ratings)" in out
+    assert "- **Types:** coffee_shop, cafe" in out
+    assert "- **Hours:** Monday: 8:00 AM – 4:00 PM; Tuesday: 8:00 AM – 4:00 PM" in out
+    assert "- **Summary:** A cozy neighborhood espresso bar." in out
+    assert "- **Reviews say:** Reviewers praise the flat whites." in out
+    assert "- **Phone:** +1 555-0100" in out
+    assert "- **Map:** https://maps.example/x" in out
+    assert "- **Place ID:** x" in out
+    # No websiteUri in the mock → the Website line must be absent entirely.
+    assert "- **Website:**" not in out
+    # Dropped-from-mask fields Google might still send must not leak through.
+    assert "PRICE_LEVEL" not in out and "Great coffee!" not in out
+
+
+@respx.mock
+async def test_multi_query_search_merges_and_dedupes():
+    """'fun date night ideas' decomposed into categories: places surfaced by
+    more than one query appear once, with a Matched line as the relevance
+    signal; each query runs as its own Places call."""
+
+    def respond(request):
+        body = json.loads(request.content)
+        if "wine bars" in body["textQuery"]:
+            places = [
+                {"id": "a", "displayName": {"text": "Vine Bar"}},
+                {"id": "b", "displayName": {"text": "Jazz & Wine"}},
+            ]
+        else:  # live music venues
+            places = [
+                {"id": "b", "displayName": {"text": "Jazz & Wine"}},
+                {"id": "c", "displayName": {"text": "The Hall"}},
+            ]
+        return httpx.Response(200, json={"places": places})
+
+    mock = respx.post(PLACES_SEARCH_TEXT_URL).mock(side_effect=respond)
+
+    out = await server.search_nearby_places(
+        queries=["wine bars", "live music venues"],
+        area_name="Williamsburg, Brooklyn",
+    )
+
+    assert mock.call_count == 2  # one Places call per query
+    # Three unique places; the shared one appears exactly once.
+    assert out.count("Jazz & Wine") == 1
+    assert "## 1. Vine Bar" in out and "## 3. The Hall" in out
+    assert "- **Matched:** wine bars, live music venues" in out  # the dupe
+    assert "- **Matched:** wine bars\n" in out  # single-query matches too
+
+
+@respx.mock
+async def test_social_website_is_flagged_unscrapable():
+    """Google sometimes lists linktr.ee/Instagram as a venue's website; the
+    markdown must warn the agent not to send it to get_events."""
+    respx.post(PLACES_SEARCH_TEXT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "places": [
+                    {
+                        "id": "a",
+                        "displayName": {"text": "Run Club"},
+                        "websiteUri": "https://linktr.ee/runclub",
+                    }
+                ]
+            },
+        )
+    )
+    out = await server.search_nearby_places(queries=["run clubs"], area_name="UWS")
+    assert (
+        "- **Website:** https://linktr.ee/runclub "
+        "(social/link-tree — get_events cannot scrape this)" in out
+    )
+
+
+@respx.mock
+async def test_single_query_search_omits_matched_line():
+    respx.post(PLACES_SEARCH_TEXT_URL).mock(
+        return_value=httpx.Response(
+            200, json={"places": [{"id": "a", "displayName": {"text": "A"}}]}
+        )
+    )
+    out = await server.search_nearby_places(queries=["bars"], area_name="Soho")
+    assert "- **Matched:**" not in out
 
 
 @respx.mock
 async def test_search_nearby_places_handles_missing_optional_fields():
-    """Google omits hours / reviews / phone for many places — must default to empty / None."""
+    """Google omits hours / phone for many places — must default to empty / None."""
     respx.post(PLACES_SEARCH_TEXT_URL).mock(
         return_value=httpx.Response(
             200,
@@ -227,12 +307,11 @@ async def test_search_nearby_places_handles_missing_optional_fields():
     )
 
     out = await server.search_nearby_places(
-        query="x", coordinates=server.LatLng(lat=40.7, lng=-74.0)
+        queries=["x"], coordinates=server.LatLng(lat=40.7, lng=-74.0)
     )
-    assert out[0]["types"] == []
-    assert out[0]["weekday_hours"] == []
-    assert out[0]["reviews"] == []
-    assert out[0]["phone_number"] is None
+    assert "## 1. Y" in out
+    for absent in ("Types", "Hours", "Phone", "Summary", "Reviews say", "Rating"):
+        assert f"- **{absent}:**" not in out
 
 
 @respx.mock
@@ -240,7 +319,7 @@ async def test_search_nearby_places_with_area_name_appends_to_query():
     respx.post(PLACES_SEARCH_TEXT_URL).mock(
         return_value=httpx.Response(200, json={"places": []})
     )
-    await server.search_nearby_places(query="bookstores", area_name="Soho")
+    await server.search_nearby_places(queries=["bookstores"], area_name="Soho")
 
     import json as _json
 
@@ -251,13 +330,13 @@ async def test_search_nearby_places_with_area_name_appends_to_query():
 
 async def test_search_nearby_places_requires_coordinates_or_area():
     with pytest.raises(ValueError, match="Provide either"):
-        await server.search_nearby_places(query="anything")
+        await server.search_nearby_places(queries=["anything"])
 
 
 async def test_search_nearby_places_rejects_both_coordinates_and_area():
     with pytest.raises(ValueError, match="not both"):
         await server.search_nearby_places(
-            query="anything",
+            queries=["anything"],
             coordinates=server.LatLng(lat=40.7, lng=-74.0),
             area_name="Soho",
         )
@@ -301,7 +380,7 @@ async def test_get_route_derives_departure_from_arrival():
     out = await server.get_route(
         origin="A",
         destination="B",
-        travel_mode="WALK",
+        travel_mode="TRANSIT",  # arrival_time is TRANSIT-only
         arrival_time="2026-04-26T18:00:00",
     )
 

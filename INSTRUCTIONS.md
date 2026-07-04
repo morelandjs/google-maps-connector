@@ -161,16 +161,23 @@ The process reads JSON-RPC frames on stdin and writes responses on stdout. You w
    - **Transport Type:** *Streamable HTTP*
    - **URL:** `http://localhost:8000/mcp`
    - Click **Connect**.
-4. You should see two tools listed: `search_nearby_places` and `get_route`.
+4. You should see three tools listed: `search_nearby_places`, `get_route`, and `get_events`.
 
 **Phase 1 acceptance run** — call each tool and confirm the JSON looks reasonable:
 
-- `search_nearby_places` with `query="bookstores"`, `area_name="Soho, Manhattan"`, `max_results=5` → expect a list of NYC bookstores with addresses, ratings, and `maps_url` links.
-- `search_nearby_places` with `query="coffee"`, `coordinates={"lat": 40.7223, "lng": -74.0030}`, `radius_m=500` → expect coffee shops near that point.
+- `search_nearby_places` with `queries=["bookstores"]`, `area_name="Soho, Manhattan"`, `max_results=5` → expect markdown sections of NYC bookstores with addresses, ratings, and map links.
+- `search_nearby_places` with `queries=["coffee"]`, `coordinates={"lat": 40.7223, "lng": -74.0030}`, `radius_m=500` → expect coffee shops near that point.
+- `search_nearby_places` with `queries=["wine bars", "comedy clubs"]`, `area_name="West Village, Manhattan"` → expect a merged, deduplicated list where each place has a `Matched` line naming the queries that surfaced it.
 - `get_route` with `origin="Times Square, New York"`, `destination="Brooklyn Bridge"`, `travel_mode="WALK"` → expect a `distance_m`, `duration_s`, `polyline`, and a list of `steps`.
 - `get_route` with `origin="JFK Airport"`, `destination="Penn Station, NYC"`, `travel_mode="TRANSIT"`, `arrival_time="2026-04-27T18:00:00Z"` → expect a `departure_time` derived from the arrival.
 
 If all four return sensible data, **Phase 1 is done.**
+
+Optionally exercise the event-discovery composition too (needs `GEMINI_API_KEY`
+in `.env` and `playwright install chromium` in the venv):
+
+- `search_nearby_places` with `queries=["live music venues"]`, `area_name="Williamsburg, Brooklyn"`, `max_results=3` → note each result's Website line.
+- `get_events` with `websites=[<two or three of those URLs>]` → expect a dict keyed by URL where each value is a JSON list of structured events (`event_title_derived`, `start_date`, `start_time`, `price`, ...), `[]` if the site has no events page, or `{"error": ...}` for bot-walled sites. The sites scrape concurrently in one shared browser; the whole call takes 20 seconds to ~3 minutes (longer when Gemini rate-limit windows are being waited out).
 
 ### 4.2 (Optional) Claude Desktop with stdio
 
@@ -214,6 +221,9 @@ If you'd rather drive it from Claude Desktop:
 | `computeRoutes returned 400` "REQUEST_DENIED" | Routes API not enabled, or not allowed by the key restriction. |
 | Empty `places: []` for an area-name search | Try a more specific area (e.g. `"Soho, Manhattan, NY"` instead of just `"Soho"`). The query is appended literally to your search text. |
 | Inspector shows tools but calls hang | Server is up but the MCP session probably needs a fresh connection — click *Reconnect* in the inspector. |
+| `get_events` raises `GEMINI_API_KEY is not set` | Create a free key at https://aistudio.google.com/apikey and add it to `.env` (locally) or Secret Manager (Cloud Run). |
+| `get_events` fails with a Playwright launch error | Browser not installed in the venv — run `.venv/bin/playwright install chromium`. |
+| `get_events` returns `{"error": "...bot-challenge wall..."}` for a site | Expected for Cloudflare-protected sites, especially from datacenter IPs; the agent should report that venue as unchecked. Other sites in the same call are unaffected. |
 
 ---
 

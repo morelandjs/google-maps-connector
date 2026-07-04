@@ -118,31 +118,59 @@ def delete_secrets(state: dict, *, auto_yes: bool) -> None:
             error(str(e))
 
 
-def delete_api_key(state: dict, *, auto_yes: bool) -> None:
-    name = state.get("maps_api_key_name")
+def delete_oauth_state_bucket(state: dict, *, auto_yes: bool) -> None:
+    pid = state.get("project_id")
+    if not pid:
+        warn("project_id missing; skipping OAuth-state bucket")
+        return
+    bucket = state.get("oauth_state_bucket", f"{pid}-oauth-state")
+    check = subprocess.run(
+        ["gcloud", "storage", "buckets", "describe", f"gs://{bucket}",
+         f"--project={pid}"],
+        capture_output=True,
+    )
+    if check.returncode != 0:
+        info("No OAuth-state bucket to delete")
+        return
+    if not confirm_or_skip(
+        f"Delete bucket gs://{bucket} (stored OAuth sessions)?",
+        default=True,
+        auto_yes=auto_yes,
+    ):
+        return
+    try:
+        gcloud(["storage", "rm", "-r", f"gs://{bucket}", "--quiet"])
+        success(f"deleted bucket gs://{bucket}")
+    except GcloudError as e:
+        error(str(e))
+
+
+def _delete_one_api_key(
+    label: str, display_name: str, state_key: str, state: dict, *, auto_yes: bool
+) -> None:
+    name = state.get(state_key)
     pid = state.get("project_id")
     if not (name and pid):
-        # Fallback: search by display name in case state lost track
-        if pid:
-            list_out = gcloud(
-                [
-                    "services", "api-keys", "list",
-                    "--filter=displayName=Google Maps MCP",
-                    f"--project={pid}",
-                    "--format=value(name)",
-                ]
-            )
-            keys = [k for k in list_out.strip().splitlines() if k]
-            if not keys:
-                info("No Maps API key with display name 'Google Maps MCP' found")
-                return
-            name = keys[0]
-        else:
-            warn("project_id and api key name both missing; skipping")
+        # Fallback: search by display name in case state lost track.
+        if not pid:
+            warn(f"project_id missing; skipping {label} key")
             return
+        list_out = gcloud(
+            [
+                "services", "api-keys", "list",
+                f"--filter=displayName={display_name}",
+                f"--project={pid}",
+                "--format=value(name)",
+            ]
+        )
+        keys = [k for k in list_out.strip().splitlines() if k]
+        if not keys:
+            info(f"No {label} API key ('{display_name}') found")
+            return
+        name = keys[0]
 
     if confirm_or_skip(
-        f"Delete Google Maps API key ({name.split('/')[-1]})?",
+        f"Delete {label} API key ({name.split('/')[-1]})?",
         default=True, auto_yes=auto_yes,
     ):
         try:
@@ -150,9 +178,20 @@ def delete_api_key(state: dict, *, auto_yes: bool) -> None:
                 ["services", "api-keys", "delete", name, "--quiet"],
                 capture=False,
             )
-            success("deleted API key")
+            success(f"deleted {label} API key")
         except GcloudError as e:
             error(str(e))
+
+
+def delete_api_key(state: dict, *, auto_yes: bool) -> None:
+    _delete_one_api_key(
+        "Google Maps", "Google Maps MCP", "maps_api_key_name",
+        state, auto_yes=auto_yes,
+    )
+    _delete_one_api_key(
+        "Gemini", "Gemini MCP", "gemini_api_key_name",
+        state, auto_yes=auto_yes,
+    )
 
 
 def delete_artifact_registry(state: dict, *, auto_yes: bool) -> None:
@@ -306,7 +345,7 @@ def main():
         f"in {state.get('region', '?')}"
     )
     print(f"  • {len(SECRET_NAMES)} secrets in Secret Manager")
-    print("  • Maps API key (Google Maps MCP)")
+    print("  • Maps + Gemini API keys")
     print("  • Artifact Registry repo 'cloud-run-source-deploy' (optional)")
     print()
 
@@ -323,7 +362,11 @@ def main():
     delete_secrets(state, auto_yes=args.yes)
 
     print()
-    print(color("Deleting Maps API key...", Colors.BOLD))
+    print(color("Deleting OAuth-state bucket...", Colors.BOLD))
+    delete_oauth_state_bucket(state, auto_yes=args.yes)
+
+    print()
+    print(color("Deleting API keys...", Colors.BOLD))
     delete_api_key(state, auto_yes=args.yes)
 
     print()

@@ -10,6 +10,7 @@ that prompt.
 """
 
 import json
+import re
 
 import httpx
 import pytest
@@ -54,12 +55,12 @@ async def test_user_asks_for_bookstores_near_soho():
     async with Client(server.mcp) as client:
         result = await client.call_tool(
             "search_nearby_places",
-            {"query": "independent bookstores", "area_name": "Soho, Manhattan"},
+            {"queries": ["independent bookstores"], "area_name": "Soho, Manhattan"},
         )
 
     assert result.is_error is False
-    assert result.data[0]["name"] == "McNally Jackson"
-    assert result.data[0]["maps_url"] == "https://maps.example/p1"
+    assert "## 1. McNally Jackson" in result.data
+    assert "- **Map:** https://maps.example/p1" in result.data
 
     # The MCP layer dispatched the area-name path: text query carries the area,
     # no locationBias was sent.
@@ -81,7 +82,7 @@ async def test_user_asks_for_coffee_within_five_minute_walk():
         result = await client.call_tool(
             "search_nearby_places",
             {
-                "query": "coffee shops",
+                "queries": ["coffee shops"],
                 "coordinates": {"lat": 40.7308, "lng": -73.9973},
                 "radius_m": 400,
                 "max_results": 5,
@@ -267,13 +268,120 @@ async def test_naive_timestamp_from_claude_is_normalized():
             {
                 "origin": "A",
                 "destination": "B",
-                "travel_mode": "WALK",
+                "travel_mode": "TRANSIT",
                 "arrival_time": "2026-04-27T18:00:00",  # naive
             },
         )
 
     body = json.loads(respx.calls.last.request.content)
     assert body["arrivalTime"] == "2026-04-27T18:00:00Z"
+
+
+# ---------- get_events scenarios ----------
+
+
+@respx.mock
+async def test_agent_composes_place_search_with_batched_event_check(monkeypatch):
+    """User: 'What's happening near Williamsburg this weekend?'
+
+    The agent-side flow: search_nearby_places surfaces venues with `website`
+    fields, then the agent passes ALL websites to get_events in one
+    call. The scrape/extract pipeline is stubbed at its seam so the test
+    exercises schema validation, the website plumbing, and serialization.
+    """
+    respx.post(PLACES_SEARCH_TEXT_URL).mock(
+        return_value=_places_response(
+            [
+                {
+                    "id": "v1",
+                    "displayName": {"text": "Test Hall"},
+                    "formattedAddress": "1 Wythe Ave, Brooklyn",
+                    "location": {"latitude": 40.72, "longitude": -73.96},
+                    "websiteUri": "https://testhall.example",
+                    "googleMapsUri": "https://maps.example/v1",
+                },
+                {
+                    "id": "v2",
+                    "displayName": {"text": "Blocked Bar"},
+                    "websiteUri": "https://blockedbar.example",
+                },
+            ]
+        )
+    )
+
+    extracted = [
+        {
+            "event_title_derived": "Jazz Night at Test Hall",
+            "event_description_derived": "Live jazz.",
+            "start_date": "2026-07-04",
+            "start_date_numeric": 20260704,
+            "start_time": "20:00:00",
+            "price": "$15",
+            "keywords": "jazz, music, live, bar, night",
+            "emoji": "🎷",
+            "event_page_url": "https://testhall.example/events",
+        }
+    ]
+    captured: dict = {}
+
+    async def fake_batch(websites, **kwargs):
+        captured["websites"] = websites
+        return {
+            "https://testhall.example": extracted,
+            "https://blockedbar.example": {"error": "bot-challenge wall"},
+        }
+
+    monkeypatch.setattr(server, "check_websites_for_events", fake_batch)
+
+    async with Client(server.mcp) as client:
+        # Step 1: the agent finds venues; websites appear as markdown lines
+        # it reads out of the response.
+        places = await client.call_tool(
+            "search_nearby_places",
+            {
+                "queries": ["live music venues and bars"],
+                "area_name": "Williamsburg, Brooklyn",
+            },
+        )
+        websites = re.findall(r"- \*\*Website:\*\* (\S+)", places.data)
+        assert websites == [
+            "https://testhall.example",
+            "https://blockedbar.example",
+        ]
+
+        # Step 2: one batched call for every website.
+        result = await client.call_tool("get_events", {"websites": websites})
+
+    assert result.is_error is False
+    assert result.data["https://testhall.example"] == extracted
+    assert result.data["https://blockedbar.example"]["error"] == "bot-challenge wall"
+    assert captured["websites"] == websites
+
+
+async def test_get_events_bad_urls_become_error_entries():
+    """Social/invalid URLs don't fail the batch — they come back per-site."""
+    async with Client(server.mcp) as client:
+        result = await client.call_tool(
+            "get_events",
+            {"websites": ["https://www.instagram.com/venue", "not a url"]},
+        )
+    assert "social-media" in result.data["https://www.instagram.com/venue"]["error"]
+    assert "http" in result.data["not a url"]["error"]
+
+
+async def test_get_events_rejects_empty_list():
+    async with Client(server.mcp) as client:
+        with pytest.raises(ToolError, match="at least 1|too_short|min_length"):
+            await client.call_tool("get_events", {"websites": []})
+
+
+async def test_get_events_requires_gemini_key(monkeypatch):
+    monkeypatch.setattr(server, "GEMINI_API_KEY", None)
+    async with Client(server.mcp) as client:
+        with pytest.raises(ToolError, match="GEMINI_API_KEY"):
+            await client.call_tool(
+                "get_events", {"websites": ["https://venue.test"]}
+            )
 
 
 # ---------- failure-mode scenarios ----------
@@ -287,7 +395,48 @@ async def test_schema_rejects_oversized_radius():
         with pytest.raises(ToolError, match="less_than_equal|50000"):
             await client.call_tool(
                 "search_nearby_places",
-                {"query": "x", "area_name": "Soho", "radius_m": 999_999},
+                {"queries": ["x"], "area_name": "Soho", "radius_m": 999_999},
+            )
+
+
+@respx.mock
+async def test_omitted_travel_mode_uses_owner_default(monkeypatch):
+    """User: 'How do I get to the airport?' — no mode stated. The server
+    fills in the install-time default (here, a midwestern driver)."""
+    monkeypatch.setattr(server, "DEFAULT_TRAVEL_MODE", "DRIVE")
+    respx.post(ROUTES_COMPUTE_URL).mock(
+        return_value=_route_response(
+            {
+                "distanceMeters": 100,
+                "duration": "60s",
+                "staticDuration": "60s",
+                "polyline": {"encodedPolyline": "x"},
+                "legs": [{"steps": []}],
+            }
+        )
+    )
+    async with Client(server.mcp) as client:
+        await client.call_tool(
+            "get_route", {"origin": "A", "destination": "B"}
+        )
+    body = json.loads(respx.calls.last.request.content)
+    assert body["travelMode"] == "DRIVE"
+    assert body["routingPreference"] == "TRAFFIC_AWARE"
+
+
+async def test_arrival_time_rejected_for_non_transit():
+    """Routes API only honors arrivalTime for TRANSIT; fail with guidance
+    instead of forwarding a request Google will 400."""
+    async with Client(server.mcp) as client:
+        with pytest.raises(ToolError, match="only supported for TRANSIT"):
+            await client.call_tool(
+                "get_route",
+                {
+                    "origin": "A",
+                    "destination": "B",
+                    "travel_mode": "DRIVE",
+                    "arrival_time": "2026-07-05T18:00:00Z",
+                },
             )
 
 
