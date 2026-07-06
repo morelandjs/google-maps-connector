@@ -1,5 +1,7 @@
 # Google Maps MCP Server
 
+[![CI](https://github.com/morelandjs/google-maps-connector/actions/workflows/ci.yml/badge.svg)](https://github.com/morelandjs/google-maps-connector/actions/workflows/ci.yml)
+
 > Personal, OAuth-protected Google Maps access for any MCP client — Claude
 > Mobile / Desktop / Web, ChatGPT, MCP Inspector, anything that speaks the
 > Model Context Protocol.
