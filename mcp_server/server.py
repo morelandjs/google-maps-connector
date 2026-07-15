@@ -13,6 +13,7 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Literal
+from urllib.parse import quote_plus
 
 from dotenv import load_dotenv
 from fastmcp import FastMCP
@@ -240,14 +241,13 @@ _PRESENTATION_NOTE = (
     "your reply, but never quote the note itself. Present each place you "
     "recommend as this two-line pattern:*\n"
     "\n"
-    "**<place name>** — [<short address>](<Map URL>), <rating>★ (<review count>)\n"
+    "[<place name>](<Map link>), <rating>★ (<review count>)\n"
     "<one-line rationale for recommending this place>\n"
     "\n"
-    "*Shorten the address to its street line (drop city/state/zip). The "
-    "address text itself is the hyperlink — markdown [address](Map URL) — "
-    "so tapping it opens the maps listing; never print a raw maps URL "
-    "anywhere in the reply. And never drop the review count — a 4.8 from "
-    "12 reviews and a 4.8 from 5,000 are different facts.*"
+    "*The place name itself is the hyperlink: use the place's Map link, "
+    "which opens the listing in the Google Maps app. Never print a raw "
+    "URL in the reply, and never drop the review count — a 4.8 from 12 "
+    "reviews and a 4.8 from 5,000 are different facts.*"
 )
 
 
@@ -292,7 +292,17 @@ def _format_places_markdown(
             add("Website", f"{p['website']} (social/link-tree — get_events cannot scrape this)")
         else:
             add("Website", p["website"])
-        add("Map", p["maps_url"])
+        if p["place_id"]:
+            # Official Maps URLs form — unlike the ?cid= share link, this is
+            # documented to open the native Google Maps app when installed
+            # (universal/app links), falling back to the browser otherwise.
+            add(
+                "Map",
+                "https://www.google.com/maps/search/?api=1"
+                f"&query={quote_plus(p['name'])}&query_place_id={p['place_id']}",
+            )
+        else:
+            add("Map", p["maps_url"])
         add("Place ID", p["place_id"])
         sections.append("\n".join(lines))
     return "\n\n".join(sections) + "\n\n" + _PRESENTATION_NOTE

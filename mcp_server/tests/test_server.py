@@ -208,7 +208,12 @@ async def test_search_nearby_places_with_coordinates_uses_bias():
     assert "- **Summary:** A cozy neighborhood espresso bar." in out
     assert "- **Reviews say:** Reviewers praise the flat whites." in out
     assert "- **Phone:** +1 555-0100" in out
-    assert "- **Map:** https://maps.example/x" in out
+    # The Map line is the official Maps-URLs deep link (opens the native
+    # app), built from name + place_id — not Google's ?cid= share URL.
+    assert (
+        "- **Map:** https://www.google.com/maps/search/?api=1"
+        "&query=X&query_place_id=x" in out
+    )
     assert "- **Place ID:** x" in out
     # No websiteUri in the mock → the Website line must be absent entirely.
     assert "- **Website:**" not in out
@@ -437,9 +442,9 @@ def test_presentation_note_trails_results_but_not_empty_response():
     assert out.rstrip().endswith(server._PRESENTATION_NOTE.splitlines()[-1])
     # The note prescribes the two-line pattern with angle-bracket
     # placeholders (nothing literal enough to be parroted):
-    #   **<place name>** — [<short address>](<Map URL>), <rating>★ (<review count>)
+    #   [<place name>](<Map link>), <rating>★ (<review count>)
     #   <one-line rationale for recommending this place>
-    assert "(<Map URL>)" in server._PRESENTATION_NOTE
+    assert "[<place name>](<Map link>)" in server._PRESENTATION_NOTE
     assert "<rating>★ (<review count>)" in server._PRESENTATION_NOTE
     assert "rationale" in server._PRESENTATION_NOTE.lower()
 

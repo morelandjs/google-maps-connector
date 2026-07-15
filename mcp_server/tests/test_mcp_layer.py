@@ -79,7 +79,10 @@ async def test_user_asks_for_bookstores_near_soho():
 
     assert result.is_error is False
     assert "## 1. McNally Jackson" in result.data
-    assert "- **Map:** https://maps.example/p1" in result.data
+    assert (
+        "- **Map:** https://www.google.com/maps/search/?api=1"
+        "&query=McNally+Jackson&query_place_id=p1" in result.data
+    )
 
     # The MCP layer dispatched the area-name path: the text query carries the
     # area, and the resolved viewport rides along as a rectangle bias.
