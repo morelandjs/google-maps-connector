@@ -53,7 +53,8 @@ async def test_search_nearby_places_live_against_google():
     )
 
     assert isinstance(out, str)
-    assert out.startswith("## 1. "), "Expected at least one coffee result"
+    assert out.startswith("<formatting_rules>"), "formatting rules must lead"
+    assert "## 1. " in out, "Expected at least one coffee result"
 
     # Must-have lines for a Times Square coffee shop.
     for label in ("Address", "Coordinates", "Types", "Map", "Place ID"):

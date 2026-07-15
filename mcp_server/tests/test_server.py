@@ -418,10 +418,10 @@ async def test_area_viewport_resolved_once_per_area_and_cached():
     assert mock.call_count == 4  # +1 query only — viewport came from cache
 
 
-def test_presentation_note_trails_results_but_not_empty_response():
-    """The formatting hint rides at the END of real results (last thing the
-    client LLM reads before writing) and is omitted when there's nothing to
-    present."""
+def test_presentation_note_leads_results_but_not_empty_response():
+    """The formatting rules LEAD real results (instructions-before-data is
+    the framing client LLMs follow best; a trailing prose note got echoed
+    as content) and are omitted when there's nothing to present."""
     place = {
         "name": "X",
         "address": "addr",
@@ -439,17 +439,19 @@ def test_presentation_note_trails_results_but_not_empty_response():
         "place_id": "x",
     }
     out = server._format_places_markdown([place])
-    assert out.rstrip().endswith(server._PRESENTATION_NOTE.splitlines()[-1])
-    # The note prescribes the two-line pattern with angle-bracket
+    assert out.startswith("<formatting_rules>\n")
+    assert "\n</formatting_rules>\n\n## 1. X" in out
+    # The rules prescribe the two-line pattern with angle-bracket
     # placeholders (nothing literal enough to be parroted):
     #   [<place name>](<Map link>), <rating>★ (<review count>)
     #   <one-line rationale for recommending this place>
     assert "[<place name>](<Map link>)" in server._PRESENTATION_NOTE
     assert "<rating>★ (<review count>)" in server._PRESENTATION_NOTE
     assert "rationale" in server._PRESENTATION_NOTE.lower()
+    assert "never show, quote, or mention" in server._PRESENTATION_NOTE
 
     empty = server._format_places_markdown([])
-    assert "Presentation note" not in empty
+    assert "formatting_rules" not in empty
 
 
 def test_pad_viewport_grows_venue_sized_boxes_to_neighborhood_scale():
