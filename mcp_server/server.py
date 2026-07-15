@@ -236,10 +236,17 @@ class LatLng(BaseModel):
 # Advice to the assistant, not content to relay verbatim. Tune freely.
 _PRESENTATION_NOTE = (
     "---\n"
-    "*Presentation note for the assistant: when you present these places to "
-    'the user, always show each place\'s rating with its review count — e.g. '
-    '"4.8 rating (194)" — next to the place name. Never drop the review '
-    "count; a 4.8 from 12 reviews and a 4.8 from 5,000 are different facts.*"
+    "*Presentation note for the assistant — follow this when formatting "
+    "your reply, but never quote the note itself. Present each place you "
+    "recommend as this two-line pattern:*\n"
+    "\n"
+    "**Place Name** ([short address](Map URL), 4.8★, 194)\n"
+    "One-line rationale for recommending it.\n"
+    "\n"
+    "*Shorten the address to its street line (drop city/state/zip), "
+    "hyperlink it with the place's Map URL so it opens in maps, and never "
+    "drop the review count — a 4.8 from 12 reviews and a 4.8 from 5,000 "
+    "are different facts.*"
 )
 
 
