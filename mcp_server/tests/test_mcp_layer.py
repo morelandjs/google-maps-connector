@@ -36,8 +36,26 @@ def _route_response(route: dict) -> httpx.Response:
 @respx.mock
 async def test_user_asks_for_bookstores_near_soho():
     """User: 'What independent bookstores are near Soho?'"""
-    mock = respx.post(PLACES_SEARCH_TEXT_URL).mock(
-        return_value=_places_response(
+
+    def respond(request):
+        body = json.loads(request.content)
+        if body["textQuery"] == "Soho, Manhattan":  # the area-resolution call
+            return httpx.Response(
+                200,
+                json={
+                    "places": [
+                        {
+                            "id": "soho",
+                            "location": {"latitude": 40.723, "longitude": -74.001},
+                            "viewport": {
+                                "low": {"latitude": 40.718, "longitude": -74.008},
+                                "high": {"latitude": 40.729, "longitude": -73.995},
+                            },
+                        }
+                    ]
+                },
+            )
+        return _places_response(
             [
                 {
                     "id": "p1",
@@ -50,7 +68,8 @@ async def test_user_asks_for_bookstores_near_soho():
                 }
             ]
         )
-    )
+
+    mock = respx.post(PLACES_SEARCH_TEXT_URL).mock(side_effect=respond)
 
     async with Client(server.mcp) as client:
         result = await client.call_tool(
@@ -62,11 +81,11 @@ async def test_user_asks_for_bookstores_near_soho():
     assert "## 1. McNally Jackson" in result.data
     assert "- **Map:** https://maps.example/p1" in result.data
 
-    # The MCP layer dispatched the area-name path: text query carries the area,
-    # no locationBias was sent.
+    # The MCP layer dispatched the area-name path: the text query carries the
+    # area, and the resolved viewport rides along as a rectangle bias.
     body = json.loads(mock.calls.last.request.content)
     assert body["textQuery"] == "independent bookstores in Soho, Manhattan"
-    assert "locationBias" not in body
+    assert "rectangle" in body["locationBias"]
 
 
 @respx.mock

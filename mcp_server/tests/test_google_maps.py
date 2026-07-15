@@ -5,14 +5,69 @@ import pytest
 import respx
 
 from google_maps import (
+    AREA_RESOLVE_FIELD_MASK,
     PLACES_FIELD_MASK,
     PLACES_SEARCH_TEXT_URL,
     ROUTES_COMPUTE_URL,
     ROUTES_FIELD_MASK,
     GoogleMapsError,
     compute_route,
+    resolve_area_viewport,
     search_places_by_text,
 )
+
+
+@respx.mock
+async def test_resolve_area_viewport_returns_viewport_with_minimal_mask():
+    route = respx.post(PLACES_SEARCH_TEXT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "places": [
+                    {
+                        "id": "x",
+                        "location": {"latitude": 40.7, "longitude": -74.0},
+                        "viewport": {
+                            "low": {"latitude": 40.69, "longitude": -74.01},
+                            "high": {"latitude": 40.71, "longitude": -73.99},
+                        },
+                    }
+                ]
+            },
+        )
+    )
+
+    viewport = await resolve_area_viewport(api_key="k", area_name="Soho")
+
+    assert viewport == {
+        "low": {"latitude": 40.69, "longitude": -74.01},
+        "high": {"latitude": 40.71, "longitude": -73.99},
+    }
+    request = route.calls.last.request
+    assert request.headers["X-Goog-FieldMask"] == AREA_RESOLVE_FIELD_MASK
+    body = json.loads(request.content)
+    assert body == {
+        "textQuery": "Soho",
+        "maxResultCount": 1,
+        "languageCode": "en",
+    }
+
+
+@respx.mock
+async def test_resolve_area_viewport_swallows_http_failures():
+    """Resolution is a ranking enhancement — a 500 must yield None, not raise."""
+    respx.post(PLACES_SEARCH_TEXT_URL).mock(
+        return_value=httpx.Response(500, text="boom")
+    )
+    assert await resolve_area_viewport(api_key="k", area_name="Soho") is None
+
+
+@respx.mock
+async def test_resolve_area_viewport_handles_unresolvable_names():
+    respx.post(PLACES_SEARCH_TEXT_URL).mock(
+        return_value=httpx.Response(200, json={})
+    )
+    assert await resolve_area_viewport(api_key="k", area_name="Xyzzy") is None
 
 
 @respx.mock

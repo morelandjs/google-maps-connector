@@ -243,7 +243,7 @@ async def test_multi_query_search_merges_and_dedupes():
         area_name="Williamsburg, Brooklyn",
     )
 
-    assert mock.call_count == 2  # one Places call per query
+    assert mock.call_count == 3  # 1 area resolution + one Places call per query
     # Three unique places; the shared one appears exactly once.
     assert out.count("Jazz & Wine") == 1
     assert "## 1. Vine Bar" in out and "## 3. The Hall" in out
@@ -314,18 +314,123 @@ async def test_search_nearby_places_handles_missing_optional_fields():
         assert f"- **{absent}:**" not in out
 
 
+_SOHO_VIEWPORT = {
+    "low": {"latitude": 40.71, "longitude": -74.01},
+    "high": {"latitude": 40.73, "longitude": -73.99},
+}
+
+
+def _area_aware_responder(area_name, viewport, places):
+    """searchText mock: the area-resolution call gets a viewport, category
+    queries get `places`."""
+
+    def respond(request):
+        import json as _json
+
+        body = _json.loads(request.content)
+        if body["textQuery"] == area_name:
+            assert body["maxResultCount"] == 1  # resolution asks for one hit
+            return httpx.Response(
+                200,
+                json={
+                    "places": [
+                        {
+                            "id": "the-area",
+                            "location": {"latitude": 40.72, "longitude": -74.0},
+                            "viewport": viewport,
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(200, json={"places": places})
+
+    return respond
+
+
 @respx.mock
 async def test_search_nearby_places_with_area_name_appends_to_query():
-    respx.post(PLACES_SEARCH_TEXT_URL).mock(
-        return_value=httpx.Response(200, json={"places": []})
+    """Hybrid anchoring: the area resolves to a viewport once, then every
+    query carries BOTH the composed text anchor and a rectangle bias."""
+    mock = respx.post(PLACES_SEARCH_TEXT_URL).mock(
+        side_effect=_area_aware_responder("Soho", _SOHO_VIEWPORT, [])
     )
     await server.search_nearby_places(queries=["bookstores"], area_name="Soho")
 
     import json as _json
 
-    body = _json.loads(respx.calls.last.request.content)
+    assert mock.call_count == 2  # 1 area resolution + 1 query
+    body = _json.loads(mock.calls.last.request.content)
     assert body["textQuery"] == "bookstores in Soho"
+    # 0.02° spans exceed the padding minimum, so the viewport passes through.
+    assert body["locationBias"]["rectangle"] == _SOHO_VIEWPORT
+
+
+@respx.mock
+async def test_area_resolution_failure_degrades_to_unbiased_search():
+    """A name Google can't resolve must not break the search: same composed
+    text query, just no locationBias."""
+
+    def respond(request):
+        import json as _json
+
+        body = _json.loads(request.content)
+        if body["textQuery"] == "Nowhereville":
+            return httpx.Response(200, json={})  # resolves to nothing
+        return httpx.Response(
+            200,
+            json={"places": [{"id": "z", "displayName": {"text": "Z"}}]},
+        )
+
+    mock = respx.post(PLACES_SEARCH_TEXT_URL).mock(side_effect=respond)
+    out = await server.search_nearby_places(
+        queries=["cafes"], area_name="Nowhereville"
+    )
+
+    import json as _json
+
+    assert "## 1. Z" in out
+    body = _json.loads(mock.calls.last.request.content)
+    assert body["textQuery"] == "cafes in Nowhereville"
     assert "locationBias" not in body
+
+
+@respx.mock
+async def test_area_viewport_resolved_once_per_area_and_cached():
+    """N queries share one resolution call, and a second tool call for the
+    same area skips resolution entirely (module-level cache)."""
+    mock = respx.post(PLACES_SEARCH_TEXT_URL).mock(
+        side_effect=_area_aware_responder("Red Hook, Brooklyn", _SOHO_VIEWPORT, [])
+    )
+
+    await server.search_nearby_places(
+        queries=["bars", "bakeries"], area_name="Red Hook, Brooklyn"
+    )
+    assert mock.call_count == 3  # 1 resolution + 2 queries
+
+    await server.search_nearby_places(
+        queries=["cafes"], area_name="Red Hook, Brooklyn"
+    )
+    assert mock.call_count == 4  # +1 query only — viewport came from cache
+
+
+def test_pad_viewport_grows_venue_sized_boxes_to_neighborhood_scale():
+    tiny = {
+        "low": {"latitude": 40.0, "longitude": -74.0},
+        "high": {"latitude": 40.001, "longitude": -73.999},
+    }
+    padded = server._pad_viewport(tiny)
+    assert padded["high"]["latitude"] - padded["low"]["latitude"] == pytest.approx(
+        0.018
+    )
+    assert padded["high"]["longitude"] - padded["low"]["longitude"] == pytest.approx(
+        0.018
+    )
+
+    neighborhood = {
+        "low": {"latitude": 40.0, "longitude": -74.0},
+        "high": {"latitude": 40.05, "longitude": -73.95},
+    }
+    assert server._pad_viewport(neighborhood) == neighborhood
 
 
 async def test_search_nearby_places_requires_coordinates_or_area():

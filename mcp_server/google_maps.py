@@ -32,6 +32,16 @@ PLACES_FIELD_MASK = ",".join(
     ]
 )
 
+# Minimal mask for resolving an area name to its geometry — id/location/viewport
+# sit in the cheapest searchText SKU, keeping the extra anchoring call cheap.
+AREA_RESOLVE_FIELD_MASK = ",".join(
+    [
+        "places.id",
+        "places.location",
+        "places.viewport",
+    ]
+)
+
 ROUTES_FIELD_MASK = ",".join(
     [
         "routes.distanceMeters",
@@ -85,6 +95,52 @@ async def search_places_by_text(
             f"places:searchText returned {resp.status_code}: {resp.text}"
         )
     return resp.json().get("places", [])
+
+
+async def resolve_area_viewport(
+    *,
+    api_key: str,
+    area_name: str,
+    timeout: float = 10.0,
+    language_code: str = "en",
+) -> dict[str, Any] | None:
+    """Resolve a free-text area/venue name to its map viewport rectangle.
+
+    One extra searchText call turns "Little Italy, Manhattan" into a bounding
+    box that category queries then carry as locationBias: the composed text
+    anchor pins the semantics, the viewport pins the geometry, and same-named
+    businesses in other parts of town stop outranking places actually there.
+
+    Best-effort by design: returns None on any failure (unresolvable name,
+    HTTP error, missing viewport). Callers search without a bias rather than
+    surfacing an error for what is only a ranking enhancement.
+    """
+    body = {
+        "textQuery": area_name,
+        "maxResultCount": 1,
+        "languageCode": language_code,
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": api_key,
+        "X-Goog-FieldMask": AREA_RESOLVE_FIELD_MASK,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(
+                PLACES_SEARCH_TEXT_URL, json=body, headers=headers
+            )
+    except httpx.HTTPError:
+        return None
+    if resp.status_code != 200:
+        return None
+
+    places = resp.json().get("places", [])
+    viewport = places[0].get("viewport") if places else None
+    if not viewport or "low" not in viewport or "high" not in viewport:
+        return None
+    return viewport
 
 
 async def compute_route(

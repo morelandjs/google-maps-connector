@@ -30,3 +30,14 @@ if not os.environ.get("GEMINI_API_KEY"):
 # Inspector — see INSTRUCTIONS.md.
 for _oauth_var in ("GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET"):
     os.environ.pop(_oauth_var, None)
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _clear_area_viewport_cache():
+    """The area→viewport cache is module-level state; isolate tests from it."""
+    import server
+
+    server._AREA_VIEWPORT_CACHE.clear()
+    yield

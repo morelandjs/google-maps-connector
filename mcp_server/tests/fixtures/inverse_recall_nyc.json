@@ -1,186 +1,133 @@
 {
   "generated_at": "2026-07-15",
-  "criteria": "NYC places with rating > 4.5 and >= 200 ratings, discovered via search_nearby_places category sweeps over Manhattan and Brooklyn; event seeds captured from one get_events batch over seed venues the same day",
+  "criteria": "Seed places are chosen INDEPENDENTLY of the search tool: candidates come from the assisting model's training knowledge of well-regarded NYC venues (editorial/cultural consensus, cutoff Jan 2026), with inverse queries written BEFORE any lookups. Each candidate was then verified alive via a NAME lookup (a different retrieval path than the category queries under test) and kept only if rating > 4.5 with >= 200 ratings. Famous places failing that live bar were dropped (Katz's 4.5, Death & Co 4.5, Attaboy 4.2, Lucali 4.2, Dominique Ansel 4.3, House of Yes 4.5, ...). Do NOT reseed this list from search_nearby_places category sweeps - that makes the test circular (verifying that a query returns what the same query returned).",
   "place_seeds": [
     {
-      "name": "Comedy Cellar",
-      "place_id": "ChIJmzPYgJFZwokRg4zUwTlZwtI",
-      "category": "comedy club",
-      "rating": 4.8,
-      "review_count": 8093,
-      "inverse_query": "comedy clubs",
-      "anchor": {"area_name": "Greenwich Village, Manhattan, NY"}
+      "name": "Sunny's",
+      "place_id": "ChIJlcb1So9awokRGb-r3HkH0wg",
+      "category": "bar with live music",
+      "rating": 4.7,
+      "review_count": 820,
+      "inverse_query": "dive bars with live music",
+      "anchor": {"area_name": "Red Hook, Brooklyn, NY"}
     },
     {
-      "name": "Village Vanguard",
-      "place_id": "ChIJ1Y0Fz5VZwokRia-gnWy02iE",
+      "name": "Dizzy's Club",
+      "place_id": "ChIJp3PsL_ZYwokRUH1k95teGuM",
       "category": "jazz club",
       "rating": 4.6,
-      "review_count": 2093,
+      "review_count": 1310,
       "inverse_query": "jazz clubs",
-      "anchor": {"area_name": "West Village, Manhattan, NY"}
+      "anchor": {"area_name": "Columbus Circle, Manhattan, NY"}
     },
     {
-      "name": "Birdland Jazz Club",
-      "place_id": "ChIJdc9EhVNYwokR-naSYfm_Urc",
-      "category": "jazz club",
+      "name": "Barbès",
+      "place_id": "ChIJKWlob_1awokRdCtsFyyvH_Y",
+      "category": "live music venue",
       "rating": 4.7,
-      "review_count": 5022,
-      "inverse_query": "jazz clubs",
-      "anchor": {"area_name": "Theater District, Manhattan, NY"}
+      "review_count": 898,
+      "inverse_query": "world music venues",
+      "anchor": {"area_name": "Park Slope, Brooklyn, NY"}
     },
     {
-      "name": "The Dickens",
-      "place_id": "ChIJXz1QXE5ZwokRLwJIVmQhyEc",
-      "category": "cocktail bar",
+      "name": "L'industrie Pizzeria - Little Italy",
+      "place_id": "ChIJLa2K2KhZwokRnhfilqh5HeI",
+      "category": "pizza restaurant",
       "rating": 4.8,
-      "review_count": 2208,
-      "inverse_query": "cocktail bars",
-      "anchor": {"area_name": "Hell's Kitchen, Manhattan, NY"}
+      "review_count": 301,
+      "inverse_query": "pizza",
+      "note": "Was 'pizza by the slice' — probed 2026-07-15: Google's literal matcher never returns this place for that phrase (absent from 20 viewport-restricted results) yet ranks it #1 for plain 'pizza'. Attribute-qualified phrases silently exclude unindexed places; the schema now warns about this. Keep this seed's query PLAIN.",
+      "anchor": {"area_name": "Little Italy, Manhattan, NY"}
     },
     {
-      "name": "Kin ramen",
-      "place_id": "ChIJd4V0ClVZwokR5Z_ZiTr_Iso",
-      "category": "ramen restaurant",
-      "rating": 4.8,
-      "review_count": 4687,
-      "inverse_query": "ramen restaurants",
-      "anchor": {"area_name": "Midtown Manhattan, NY"}
+      "name": "Russ & Daughters",
+      "place_id": "ChIJ7VEEjYNZwokRS0bdsXA3uyg",
+      "category": "appetizing shop",
+      "rating": 4.6,
+      "review_count": 4707,
+      "inverse_query": "smoked fish and bagels",
+      "anchor": {"area_name": "Lower East Side, Manhattan, NY"}
     },
     {
-      "name": "Three Lives & Company",
-      "place_id": "ChIJ4SYiPZRZwokRM_H1_7dJhMY",
-      "category": "bookstore",
-      "rating": 4.8,
-      "review_count": 582,
-      "inverse_query": "independent bookstores",
-      "anchor": {"area_name": "West Village, Manhattan, NY"}
-    },
-    {
-      "name": "Yu & Me Books",
-      "place_id": "ChIJW7aK_uNbwokR7OmleQaigQs",
-      "category": "bookstore",
-      "rating": 4.8,
-      "review_count": 439,
-      "inverse_query": "independent bookstores",
-      "anchor": {"area_name": "Chinatown, Manhattan, NY"}
-    },
-    {
-      "name": "The Metropolitan Museum of Art",
-      "place_id": "ChIJb8Jg9pZYwokR-qHGtvSkLzs",
-      "category": "art museum",
-      "rating": 4.8,
-      "review_count": 93974,
-      "inverse_query": "art museums",
-      "anchor": {"area_name": "Upper East Side, Manhattan, NY"}
-    },
-    {
-      "name": "Le Parisien Bakery",
-      "place_id": "ChIJnzkPKwBZwokRmUk0EzQbaNE",
+      "name": "Levain Bakery",
+      "place_id": "ChIJ6SmehIlYwokRaO14xlmbWZU",
       "category": "bakery",
-      "rating": 4.8,
-      "review_count": 8562,
-      "inverse_query": "french bakeries",
-      "anchor": {"area_name": "Theater District, Manhattan, NY"}
-    },
-    {
-      "name": "Central Rock Gym - Manhattan",
-      "place_id": "ChIJ8ZFPP1xYwokRe2Ua4G_iF-s",
-      "category": "climbing gym",
       "rating": 4.7,
-      "review_count": 200,
-      "inverse_query": "climbing gyms",
+      "review_count": 7283,
+      "inverse_query": "cookie bakeries",
       "anchor": {"area_name": "Upper West Side, Manhattan, NY"}
     },
     {
-      "name": "Movement LIC",
-      "place_id": "ChIJxe0RxCdZwokRK3vM_8IU7Vk",
-      "category": "climbing gym",
-      "rating": 4.7,
-      "review_count": 1641,
-      "inverse_query": "rock climbing gyms",
-      "anchor": {"area_name": "Long Island City, Queens, NY"}
+      "name": "Housing Works Bookstore",
+      "place_id": "ChIJSaRjC49ZwokR402Rpxj6i9Q",
+      "category": "bookstore cafe",
+      "rating": 4.6,
+      "review_count": 1790,
+      "inverse_query": "used bookstore cafes",
+      "anchor": {"area_name": "SoHo, Manhattan, NY"}
     },
     {
-      "name": "Wild East Brewing Co.",
-      "place_id": "ChIJCb9dhqVbwokRRWJzMd-IdYk",
-      "category": "brewery",
-      "rating": 4.8,
-      "review_count": 326,
-      "inverse_query": "craft breweries",
+      "name": "Greenlight Bookstore (Fulton Street)",
+      "place_id": "ChIJjTxYtrFbwokRLcr7cM149Uo",
+      "category": "bookstore",
+      "rating": 4.7,
+      "review_count": 1022,
+      "inverse_query": "independent bookstores",
+      "anchor": {"area_name": "Fort Greene, Brooklyn, NY"}
+    },
+    {
+      "name": "The Morgan Library & Museum",
+      "place_id": "ChIJ3453OAdZwokRja92OOKCugM",
+      "category": "museum",
+      "rating": 4.7,
+      "review_count": 5105,
+      "inverse_query": "rare book museums",
+      "anchor": {"area_name": "Murray Hill, Manhattan, NY"}
+    },
+    {
+      "name": "Tenement Museum",
+      "place_id": "ChIJ20bVJYdZwokRhI7esP3mYM0",
+      "category": "history museum",
+      "rating": 4.6,
+      "review_count": 5988,
+      "inverse_query": "immigration history museums",
+      "anchor": {"area_name": "Lower East Side, Manhattan, NY"}
+    },
+    {
+      "name": "New York Transit Museum",
+      "place_id": "ChIJdThqNVVawokRFk58UQOvtuM",
+      "category": "museum",
+      "rating": 4.7,
+      "review_count": 6499,
+      "inverse_query": "transit museums",
+      "anchor": {"area_name": "Downtown Brooklyn, Brooklyn, NY"}
+    },
+    {
+      "name": "Royal Palms Shuffleboard Club Brooklyn",
+      "place_id": "ChIJmyATsVVawokRVdHt_NaD2aE",
+      "category": "activity bar",
+      "rating": 4.6,
+      "review_count": 1816,
+      "inverse_query": "shuffleboard bars",
       "anchor": {"area_name": "Gowanus, Brooklyn, NY"}
     },
     {
-      "name": "TALEA Beer Co - Williamsburg",
-      "place_id": "ChIJ5TvP21FZwokRLFjbliEhRUc",
-      "category": "brewery",
+      "name": "Nitehawk Cinema Williamsburg",
+      "place_id": "ChIJMza4HWFZwokREyXlhbnRf5E",
+      "category": "dine-in cinema",
       "rating": 4.6,
-      "review_count": 398,
-      "inverse_query": "breweries",
+      "review_count": 1996,
+      "inverse_query": "dine-in movie theaters",
       "anchor": {"area_name": "Williamsburg, Brooklyn, NY"}
     },
     {
-      "name": "Brooklyn Steel",
-      "place_id": "ChIJ__8Pf01ZwokRyFh1eqIcjWk",
-      "category": "live music venue",
-      "rating": 4.6,
-      "review_count": 4183,
-      "inverse_query": "concert venues",
-      "anchor": {"area_name": "East Williamsburg, Brooklyn, NY"}
-    },
-    {
-      "name": "National Sawdust",
-      "place_id": "ChIJCbibFmdZwokRKmI58saIUJM",
-      "category": "live music venue",
-      "rating": 4.7,
-      "review_count": 381,
-      "inverse_query": "live music venues",
-      "anchor": {"area_name": "Williamsburg, Brooklyn, NY"}
-    },
-    {
-      "name": "Beat The Bomb Brooklyn",
-      "place_id": "ChIJeQK8JjNawokRHe4x0TextbU",
-      "category": "activity venue",
-      "rating": 5.0,
-      "review_count": 16054,
-      "inverse_query": "escape rooms",
-      "anchor": {"area_name": "DUMBO, Brooklyn, NY"}
-    },
-    {
-      "name": "RAS Plant Based",
-      "place_id": "ChIJC2cqQEhbwokRxC2JSiGx2Vw",
-      "category": "vegan restaurant",
-      "rating": 4.8,
-      "review_count": 1392,
-      "inverse_query": "vegan restaurants",
-      "anchor": {"area_name": "Crown Heights, Brooklyn, NY"}
-    },
-    {
-      "name": "Black Mountain Wine House",
-      "place_id": "ChIJRbPB4FZawokRXP763NbNRHU",
+      "name": "The Four Horsemen",
+      "place_id": "ChIJbTCMl19ZwokRUohF137p9cQ",
       "category": "wine bar",
-      "rating": 4.7,
-      "review_count": 527,
-      "inverse_query": "wine bars",
-      "anchor": {"area_name": "Carroll Gardens, Brooklyn, NY"}
-    },
-    {
-      "name": "SEY Coffee",
-      "place_id": "ChIJtz83BQFcwokRrUZ9HpeGOng",
-      "category": "coffee shop",
       "rating": 4.6,
-      "review_count": 1104,
-      "inverse_query": "specialty coffee shops",
-      "anchor": {"area_name": "Bushwick, Brooklyn, NY"}
-    },
-    {
-      "name": "Dellarocco's Brick Oven Pizza",
-      "place_id": "ChIJRYqTNEZawokRuSMWeyyinyI",
-      "category": "pizza restaurant",
-      "rating": 4.6,
-      "review_count": 1350,
-      "inverse_query": "brick oven pizza",
-      "anchor": {"area_name": "Brooklyn Heights, Brooklyn, NY"}
+      "review_count": 1155,
+      "inverse_query": "natural wine bars",
+      "anchor": {"area_name": "Williamsburg, Brooklyn, NY"}
     }
   ],
   "event_seeds": [

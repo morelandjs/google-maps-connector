@@ -69,7 +69,15 @@ secrets, and any Cloud Run / Secret Manager values. Concretely:
   (`https://places.googleapis.com/v1/places:searchText`).
 - **Geocoding is intentionally avoided.** Area-name lookups go through Places
   `searchText` with a location bias rather than enabling a third API surface
-  (Geocoding). Don't silently add a Geocoding dependency.
+  (Geocoding). Don't silently add a Geocoding dependency. Since 2026-07 the
+  server does **hybrid anchoring** for `area_name`: one cached `searchText`
+  call (minimal field mask, `resolve_area_viewport`) resolves the area's
+  viewport, which every query then carries as a rectangle `locationBias` on
+  top of the composed `"<query> in <area>"` text. Text pins semantics,
+  viewport pins geometry — this exists because same-named businesses
+  elsewhere in town ("Little Italy Pizza" in Midtown) measurably hijacked
+  text-only ranking. Resolution is best-effort: on failure the search runs
+  unbiased, never errors.
 - **Travel modes:** `WALK`, `TRANSIT`, and `DRIVE` (`BICYCLE` is stretch). DRIVE
   opts into `routingPreference: TRAFFIC_AWARE` (upstream default is traffic-blind).
   `arrival_time` is TRANSIT-only — a Routes API limitation, rejected server-side

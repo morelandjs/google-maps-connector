@@ -28,6 +28,7 @@ from events_pipeline import _is_social, check_websites_for_events
 from google_maps import (
     GoogleMapsError,
     compute_route,
+    resolve_area_viewport,
     search_places_by_text,
 )
 
@@ -321,6 +322,50 @@ def _normalize_timestamp(value: str | None) -> str | None:
     return iso[:-6] + "Z" if iso.endswith("+00:00") else iso
 
 
+# Viewport cache for area anchoring: area names are stable, so each distinct
+# anchor costs one resolution call per instance lifetime. Bounded crudely —
+# single-tenant traffic never gets near the cap.
+_AREA_VIEWPORT_CACHE: dict[str, dict[str, Any] | None] = {}
+_AREA_VIEWPORT_CACHE_MAX = 256
+
+
+def _pad_viewport(
+    viewport: dict[str, Any], min_span_deg: float = 0.018
+) -> dict[str, Any]:
+    """Grow a viewport to neighborhood scale (~2 km) when it's smaller.
+
+    Venue anchors ("Union Street Brewing, Kingston, NY") resolve to
+    building-sized viewports; biasing to a shoebox is as good as no bias.
+    Neighborhood and city viewports pass through untouched.
+    """
+    low, high = viewport["low"], viewport["high"]
+    padded = {"low": dict(low), "high": dict(high)}
+    for axis in ("latitude", "longitude"):
+        span = high[axis] - low[axis]
+        if span < min_span_deg:
+            pad = (min_span_deg - span) / 2
+            padded["low"][axis] -= pad
+            padded["high"][axis] += pad
+    return padded
+
+
+async def _area_location_bias(area_name: str) -> dict[str, Any] | None:
+    """Rectangle locationBias for an area name, resolved once and cached."""
+    key = " ".join(area_name.lower().split())
+    if key not in _AREA_VIEWPORT_CACHE:
+        if len(_AREA_VIEWPORT_CACHE) >= _AREA_VIEWPORT_CACHE_MAX:
+            _AREA_VIEWPORT_CACHE.clear()
+        _AREA_VIEWPORT_CACHE[key] = await resolve_area_viewport(
+            api_key=API_KEY,
+            area_name=area_name,
+            language_code=LANGUAGE,
+        )
+    viewport = _AREA_VIEWPORT_CACHE[key]
+    if viewport is None:
+        return None
+    return {"rectangle": _pad_viewport(viewport)}
+
+
 async def search_nearby_places(
     queries: Annotated[
         list[str],
@@ -340,7 +385,11 @@ async def search_nearby_places(
                 "DECOMPOSE broad or vague intents into several concrete "
                 "queries instead of passing the user's phrasing through: "
                 "'fun date night ideas' → ['wine bars', 'comedy clubs', "
-                "'live music venues', 'art galleries']. Keep the queries "
+                "'live music venues', 'art galleries']. But concrete means "
+                "PLAIN, not ornate: prefer the simplest category noun that "
+                "carries the intent — 'pizza' finds every pizzeria, while "
+                "'pizza by the slice' silently drops excellent shops Google "
+                "never indexed for that exact phrase. Keep the queries "
                 "MUTUALLY DISTINCT: rephrasings of one concept "
                 "('restaurants', 'dinner spots', 'places to eat') are each a "
                 "billed API call returning the same places — spend the slots "
@@ -352,11 +401,17 @@ async def search_nearby_places(
         LatLng | None,
         Field(
             description=(
-                "A precise center point for the search, given as a {lat, lng} "
-                "object in decimal degrees (e.g. {lat: 40.7308, lng: -73.9973}). "
-                "Use this when you have GPS-grade coordinates — for instance, "
-                "the user's current position. Combine with `radius_m` to "
-                "control the search circle. Provide EITHER `coordinates` OR "
+                "FALLBACK anchor: a precise {lat, lng} center point in "
+                "decimal degrees (e.g. {lat: 40.7308, lng: -73.9973}), paired "
+                "with `radius_m`. Google treats the coordinate bias as a WEAK "
+                "signal — prominent name-matches from far away routinely "
+                "outrank places a few blocks off, so measured recall is much "
+                "lower than with `area_name` anchoring. Even when you have "
+                "the user's GPS position, prefer converting it to the "
+                "containing neighborhood and passing `area_name`. Reach for "
+                "`coordinates` only when the spot has no good name (mid-park, "
+                "on the road) or when a strict search radius matters more "
+                "than ranking quality. Provide EITHER `coordinates` OR "
                 "`area_name`, never both."
             )
         ),
@@ -365,17 +420,24 @@ async def search_nearby_places(
         str | None,
         Field(
             description=(
-                "Free-text name of the geographic anchor to search around — "
-                "a neighborhood, city, or specific venue/landmark: 'Soho, "
+                "PREFERRED anchor: free-text name of the neighborhood, city, "
+                "or specific venue/landmark to search around — 'Soho, "
                 "Manhattan', 'Shibuya, Tokyo', 'Union Street Brewing, "
-                "Kingston, NY'. Use this when the user named a place but no "
-                "coordinates are available; when the search is 'near <venue>', "
-                "the venue belongs HERE, not inside `queries`. The server "
-                "appends it to every query ('<query> in <area_name>'), which "
-                "is why queries themselves must stay location-free. Be as "
-                "specific as you'd be on Google Maps — 'Soho, Manhattan, NY' "
-                "returns better results than 'Soho'. Provide EITHER "
-                "`coordinates` OR `area_name`, never both."
+                "Kingston, NY'. The server appends it to every query "
+                "('<query> in <area_name>'), which keeps queries "
+                "location-free and anchors results far more reliably than "
+                "the coordinate bias — even when you HAVE the user's "
+                "coordinates, convert them to the containing neighborhood "
+                "name and pass it here. When the search is 'near <venue>', "
+                "the venue belongs HERE, not inside `queries`. FULLY QUALIFY "
+                "ambiguous names using whatever you know of the user's "
+                "location: 'West Village' from a user near NYC → 'West "
+                "Village, Manhattan, NY'; from a user in Detroit → 'West "
+                "Village, Detroit, MI'. Unqualified names resolve to the "
+                "world-famous instance — silently wrong for a user near a "
+                "lesser-known homonym — so if the name is ambiguous and the "
+                "user's location is unknown, ask rather than guess. Provide "
+                "EITHER `coordinates` OR `area_name`, never both."
             )
         ),
     ] = None,
@@ -460,11 +522,14 @@ async def search_nearby_places(
       - Historical / trivia questions ("Who founded X?") — no live-data need.
 
     Exactly one geographic anchor must be provided:
-      - `coordinates` (a {lat, lng} object) — for a precise point you already
-        know. Pair with `radius_m` to scope the search circle.
-      - `area_name` (free-text string — a neighborhood, city, or specific
-        venue like "Union Street Brewing, Kingston, NY") — when the user
-        named a place but no coordinates are available.
+      - `area_name` (PREFERRED) — free-text neighborhood, city, or specific
+        venue ("West Village, Manhattan, NY"; "Union Street Brewing,
+        Kingston, NY"). Text anchoring measures far better than coordinate
+        bias. Qualify ambiguous names with the user's metro area.
+      - `coordinates` (fallback, a {lat, lng} object paired with `radius_m`)
+        — for spots with no good name, or when strict radius control matters
+        more than ranking quality. Given user GPS, prefer converting it to
+        the neighborhood name instead.
     Passing neither raises ValueError; passing both also raises ValueError.
 
     Returns markdown: one `## <n>. <name>` section per place with bullet
@@ -477,6 +542,10 @@ async def search_nearby_places(
     Notes:
       - Results are *biased* to the supplied area, not strictly clipped —
         Google may surface adjacent places if they match the query well.
+        With `area_name`, the server also resolves the area itself once
+        (cached, one cheap extra Places call per new area) and biases every
+        query to its viewport, so same-named businesses elsewhere in town
+        don't hijack the ranking.
       - Missing data means a missing line: places without a listed website
         have no Website bullet, unclassified places have no Rating, and the
         AI summaries only exist where Google has generated them. Never
@@ -505,6 +574,13 @@ async def search_nearby_places(
                 "radius": float(radius_m),
             }
         }
+    else:
+        # Hybrid anchoring: the composed text ("<query> in <area>") stays the
+        # primary, measurably stronger signal; the area's resolved viewport
+        # rides along as a geometric bias so same-named businesses elsewhere
+        # in town ("Little Italy Pizza" in Midtown) stop outranking places
+        # actually in the area. Resolution is best-effort and cached.
+        location_bias = await _area_location_bias(area_name)
 
     async def _run_query(q: str) -> list[dict[str, Any]]:
         text_query = q if coordinates is not None else f"{q} in {area_name}"

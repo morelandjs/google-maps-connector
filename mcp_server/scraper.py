@@ -112,7 +112,9 @@ async def extract_links(context: BrowserContext, page_url: str) -> list[str]:
     """Harvest every anchor href from a page (deduped, order not guaranteed)."""
     page = await context.new_page()
     try:
-        await page.goto(page_url, wait_until="domcontentloaded", timeout=10000)
+        # 25s, not 10s: real venues (comedycellar.com) time out at 10s, and the
+        # per-tool wall-clock budget comfortably absorbs a slow marquee site.
+        await page.goto(page_url, wait_until="domcontentloaded", timeout=25000)
         await _wait_out_cloudflare(page)
         await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         await page.wait_for_timeout(500)
@@ -134,7 +136,7 @@ async def extract_markdown_and_images(
     """
     page = await context.new_page()
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=10000)
+        await page.goto(url, wait_until="domcontentloaded", timeout=25000)
         await _wait_out_cloudflare(page)
         await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         await page.wait_for_timeout(1000)
