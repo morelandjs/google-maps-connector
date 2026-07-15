@@ -240,13 +240,14 @@ _PRESENTATION_NOTE = (
     "your reply, but never quote the note itself. Present each place you "
     "recommend as this two-line pattern:*\n"
     "\n"
-    "**Place Name** ([short address](Map URL), 4.8★, 194)\n"
-    "One-line rationale for recommending it.\n"
+    "**<place name>** — [<short address>](<Map URL>), <rating>★ (<review count>)\n"
+    "<one-line rationale for recommending this place>\n"
     "\n"
-    "*Shorten the address to its street line (drop city/state/zip), "
-    "hyperlink it with the place's Map URL so it opens in maps, and never "
-    "drop the review count — a 4.8 from 12 reviews and a 4.8 from 5,000 "
-    "are different facts.*"
+    "*Shorten the address to its street line (drop city/state/zip). The "
+    "address text itself is the hyperlink — markdown [address](Map URL) — "
+    "so tapping it opens the maps listing; never print a raw maps URL "
+    "anywhere in the reply. And never drop the review count — a 4.8 from "
+    "12 reviews and a 4.8 from 5,000 are different facts.*"
 )
 
 

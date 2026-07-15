@@ -435,11 +435,12 @@ def test_presentation_note_trails_results_but_not_empty_response():
     }
     out = server._format_places_markdown([place])
     assert out.rstrip().endswith(server._PRESENTATION_NOTE.splitlines()[-1])
-    # The note prescribes the two-line pattern:
-    #   **Place Name** ([short address](Map URL), 4.8★, 194)
-    #   One-line rationale for recommending it.
-    assert "(Map URL)" in server._PRESENTATION_NOTE
-    assert "★" in server._PRESENTATION_NOTE
+    # The note prescribes the two-line pattern with angle-bracket
+    # placeholders (nothing literal enough to be parroted):
+    #   **<place name>** — [<short address>](<Map URL>), <rating>★ (<review count>)
+    #   <one-line rationale for recommending this place>
+    assert "(<Map URL>)" in server._PRESENTATION_NOTE
+    assert "<rating>★ (<review count>)" in server._PRESENTATION_NOTE
     assert "rationale" in server._PRESENTATION_NOTE.lower()
 
     empty = server._format_places_markdown([])

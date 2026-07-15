@@ -85,12 +85,10 @@ gcloud run deploy "$SERVICE_NAME" \
     --add-volume-mount="volume=oauth-state,mount-path=${OAUTH_STATE_MOUNT}" \
     --set-env-vars "$env_vars"
 
-URL=$(gcloud run services describe "$SERVICE_NAME" \
-    --project="$PROJECT_ID" \
-    --region="$REGION" \
-    --format='value(status.url)')
-
+# Print the OAuth-registered host (MCP_BASE_URL), not gcloud's status.url —
+# the latter is the legacy alias, and advertising it here is how mismatched
+# redirect URIs end up in client configs.
 echo ""
-echo "==> Deployed: $URL"
-echo "==> MCP endpoint: ${URL}/mcp"
-echo "==> OAuth callback to register: ${URL}/auth/callback"
+echo "==> Deployed: $MCP_BASE_URL"
+echo "==> MCP endpoint: ${MCP_BASE_URL}/mcp"
+echo "==> OAuth callback (must be registered on the OAuth client): ${MCP_BASE_URL}/auth/callback"
