@@ -6,13 +6,14 @@
 # rebuilds the image via Cloud Build and rolls a new revision. Secrets are
 # mounted from Secret Manager (run setup-secrets.sh first).
 #
-# First deploy:    just run it; the script prints the public URL on success.
-# Subsequent runs: pass MCP_BASE_URL with the URL from the first deploy so
-#                  the OAuth metadata documents advertise the correct host.
+# MCP_BASE_URL defaults to the deterministic project-scoped URL
+# (https://<service>-<project_number>.<region>.run.app) — the host the OAuth
+# client's redirect URI is registered under. Only override it if you know the
+# registered redirect URI differs; the legacy *-<hash>-uc.a.run.app alias will
+# break sign-in with redirect_uri_mismatch.
 #
 # Usage:
 #     ./infra/deploy.sh
-#     MCP_BASE_URL=https://google-maps-mcp-xyz-uc.a.run.app ./infra/deploy.sh
 
 #
 # REQUIRED: set PROJECT_ID before running, or edit the default below. The
@@ -30,12 +31,13 @@ MCP_BASE_URL="${MCP_BASE_URL:-}"
 OAUTH_STATE_BUCKET="${OAUTH_STATE_BUCKET:-${PROJECT_ID}-oauth-state}"
 OAUTH_STATE_MOUNT="/mnt/oauth-state"
 
+PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')
+
 if ! gcloud storage buckets describe "gs://${OAUTH_STATE_BUCKET}" --project="$PROJECT_ID" &>/dev/null; then
     echo "==> Creating OAuth-state bucket gs://${OAUTH_STATE_BUCKET}..."
     gcloud storage buckets create "gs://${OAUTH_STATE_BUCKET}" \
         --project="$PROJECT_ID" --location="$REGION" \
         --uniform-bucket-level-access >/dev/null
-    PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')
     gcloud storage buckets add-iam-policy-binding "gs://${OAUTH_STATE_BUCKET}" \
         --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
         --role="roles/storage.objectAdmin" >/dev/null
@@ -48,14 +50,21 @@ CONNECTOR_LANGUAGE="${CONNECTOR_LANGUAGE:-en}"
 DEFAULT_TRAVEL_MODE="${DEFAULT_TRAVEL_MODE:-TRANSIT}"
 
 env_vars="FASTMCP_HOME=${OAUTH_STATE_MOUNT},CONNECTOR_LANGUAGE=${CONNECTOR_LANGUAGE},DEFAULT_TRAVEL_MODE=${DEFAULT_TRAVEL_MODE}"
-if [[ -n "$MCP_BASE_URL" ]]; then
-    env_vars="${env_vars},MCP_BASE_URL=${MCP_BASE_URL}"
-else
-    echo "WARNING: MCP_BASE_URL not set. The first deploy will use the default"
-    echo "         (http://localhost:8000) which breaks OAuth from any non-local"
-    echo "         client. Re-run this script with MCP_BASE_URL=<the printed URL>"
-    echo "         after the first deploy completes." >&2
+# Default to the deterministic project-scoped URL — the same one install.py
+# predicts and registers as the OAuth redirect URI. Passing any OTHER host
+# (e.g. the legacy random-suffix *.a.run.app alias, which also serves this
+# service) makes Google reject sign-in with redirect_uri_mismatch, because
+# the server derives its OAuth callback from MCP_BASE_URL.
+if [[ -z "$MCP_BASE_URL" ]]; then
+    MCP_BASE_URL="https://${SERVICE_NAME}-${PROJECT_NUMBER}.${REGION}.run.app"
+    echo "==> MCP_BASE_URL not set; defaulting to ${MCP_BASE_URL}"
+elif [[ "$MCP_BASE_URL" != "https://${SERVICE_NAME}-${PROJECT_NUMBER}.${REGION}.run.app" ]]; then
+    echo "WARNING: MCP_BASE_URL=${MCP_BASE_URL} differs from the project-scoped"
+    echo "         URL this service's OAuth client was registered with. If Google"
+    echo "         sign-in fails with redirect_uri_mismatch, rerun without"
+    echo "         overriding MCP_BASE_URL." >&2
 fi
+env_vars="${env_vars},MCP_BASE_URL=${MCP_BASE_URL}"
 
 echo "==> Project: $PROJECT_ID  Service: $SERVICE_NAME  Region: $REGION"
 echo "==> Deploying (Cloud Build will pick up the Dockerfile at the repo root)..."

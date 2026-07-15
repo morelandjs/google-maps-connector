@@ -413,6 +413,34 @@ async def test_area_viewport_resolved_once_per_area_and_cached():
     assert mock.call_count == 4  # +1 query only — viewport came from cache
 
 
+def test_presentation_note_trails_results_but_not_empty_response():
+    """The formatting hint rides at the END of real results (last thing the
+    client LLM reads before writing) and is omitted when there's nothing to
+    present."""
+    place = {
+        "name": "X",
+        "address": "addr",
+        "lat": None,
+        "lng": None,
+        "rating": 4.8,
+        "user_rating_count": 194,
+        "types": [],
+        "weekday_hours": [],
+        "generative_summary": "",
+        "review_summary": "",
+        "phone_number": "",
+        "website": "",
+        "maps_url": "",
+        "place_id": "x",
+    }
+    out = server._format_places_markdown([place])
+    assert out.rstrip().endswith(server._PRESENTATION_NOTE.splitlines()[-1])
+    assert '"4.8 rating (194)"' in server._PRESENTATION_NOTE
+
+    empty = server._format_places_markdown([])
+    assert "Presentation note" not in empty
+
+
 def test_pad_viewport_grows_venue_sized_boxes_to_neighborhood_scale():
     tiny = {
         "low": {"latitude": 40.0, "longitude": -74.0},

@@ -230,6 +230,19 @@ class LatLng(BaseModel):
     lng: float = Field(ge=-180, le=180, description="Longitude in decimal degrees.")
 
 
+# Trailing note the calling LLM reads immediately before writing its reply —
+# the most reliable in-band channel for steering how results are PRESENTED
+# (tool schemas are read at selection time; this sits at synthesis time).
+# Advice to the assistant, not content to relay verbatim. Tune freely.
+_PRESENTATION_NOTE = (
+    "---\n"
+    "*Presentation note for the assistant: when you present these places to "
+    'the user, always show each place\'s rating with its review count — e.g. '
+    '"4.8 rating (194)" — next to the place name. Never drop the review '
+    "count; a 4.8 from 12 reviews and a 4.8 from 5,000 are different facts.*"
+)
+
+
 def _format_places_markdown(
     places: list[dict[str, Any]], *, show_matches: bool = False
 ) -> str:
@@ -237,7 +250,8 @@ def _format_places_markdown(
 
     Lines with no value are omitted entirely — absence means Google doesn't
     have that datum (e.g. no Website line = nothing to feed `get_events`).
-    With show_matches, each place lists which queries surfaced it.
+    With show_matches, each place lists which queries surfaced it. The
+    output ends with _PRESENTATION_NOTE steering how the client displays it.
     """
     if not places:
         return "No places found. Try broader queries or a larger radius."
@@ -273,7 +287,7 @@ def _format_places_markdown(
         add("Map", p["maps_url"])
         add("Place ID", p["place_id"])
         sections.append("\n".join(lines))
-    return "\n\n".join(sections)
+    return "\n\n".join(sections) + "\n\n" + _PRESENTATION_NOTE
 
 
 def _waypoint_from(value: str | LatLng | dict[str, Any]) -> dict[str, Any]:
@@ -537,7 +551,9 @@ async def search_nearby_places(
     Types (Google's place-type taxonomy), Hours, Summary (Google's AI-written
     overview), Reviews say (AI digest of reviews), Phone, Website, Map, and
     Place ID. The Website URL is what you pass to `get_events` to discover
-    the place's scheduled events.
+    the place's scheduled events. The response ends with a short
+    presentation note (keep rating + review count visible); follow it when
+    formatting your reply, but never quote the note itself to the user.
 
     Notes:
       - Results are *biased* to the supplied area, not strictly clipped —
