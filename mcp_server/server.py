@@ -244,10 +244,13 @@ _PRESENTATION_NOTE = (
     "[<place name>](<Map link>), <rating>★ (<review count>)\n"
     "<one-line rationale for recommending this place>\n"
     "\n"
-    "*The place name itself is the hyperlink: use the place's Map link, "
-    "which opens the listing in the Google Maps app. Never print a raw "
-    "URL in the reply, and never drop the review count — a 4.8 from 12 "
-    "reviews and a 4.8 from 5,000 are different facts.*"
+    "*Spacing: the rationale starts on the very NEXT line — never leave a "
+    "blank line inside a place's two-line block — and exactly one blank "
+    "line separates consecutive places. The place name itself is the "
+    "hyperlink: use the place's Map link, which opens the listing in the "
+    "Google Maps app. Never print a raw URL in the reply, and never drop "
+    "the review count — a 4.8 from 12 reviews and a 4.8 from 5,000 are "
+    "different facts.*"
 )
 
 
