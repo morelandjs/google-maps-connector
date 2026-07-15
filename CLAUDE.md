@@ -159,6 +159,7 @@ cd mcp_server && .venv/bin/pytest                    # hermetic + fixture-based 
 # test_scraper.py drives a real headless Chromium against local file:// fixtures;
 # it auto-skips if the browser is missing (fix with: .venv/bin/playwright install chromium)
 RUN_LIVE_TESTS=1 .venv/bin/pytest tests/test_live_smoke.py   # live tests against real Google APIs (+ Gemini/Playwright for get_events)
+RUN_LIVE_TESTS=1 .venv/bin/pytest tests/test_inverse_recall.py -s   # retrieval-quality eval: known-good NYC places must be recovered by their inverse queries (seeds in tests/fixtures/inverse_recall_nyc.json)
 
 # Run server locally
 cd mcp_server && .venv/bin/python server.py          # streamable-http on :8000

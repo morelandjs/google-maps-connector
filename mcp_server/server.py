@@ -332,10 +332,19 @@ async def search_nearby_places(
                 "(deduped). Google matches these fairly literally, so each "
                 "entry should be a CONCRETE venue category or keyword — "
                 "'independent bookstores', 'late-night ramen', 'rooftop bars "
-                "with a view'. DECOMPOSE broad or vague intents into several "
-                "concrete queries instead of passing the user's phrasing "
-                "through: 'fun date night ideas' → ['wine bars', 'comedy "
-                "clubs', 'live music venues', 'art galleries']."
+                "with a view'. LOCATION-FREE concepts only: never put a city, "
+                "neighborhood, or venue name inside a query — the server "
+                "anchors every query to `coordinates`/`area_name` itself, and "
+                "location words in the query text fight that anchor "
+                "('restaurants', never 'restaurants in Kingston NY'). "
+                "DECOMPOSE broad or vague intents into several concrete "
+                "queries instead of passing the user's phrasing through: "
+                "'fun date night ideas' → ['wine bars', 'comedy clubs', "
+                "'live music venues', 'art galleries']. Keep the queries "
+                "MUTUALLY DISTINCT: rephrasings of one concept "
+                "('restaurants', 'dinner spots', 'places to eat') are each a "
+                "billed API call returning the same places — spend the slots "
+                "on different concepts, not synonyms."
             ),
         ),
     ],
@@ -356,9 +365,14 @@ async def search_nearby_places(
         str | None,
         Field(
             description=(
-                "Free-text name of the geographic area to search in, e.g. "
-                "'Soho, Manhattan' or 'Shibuya, Tokyo'. Use this when the "
-                "user named a place but no coordinates are available. Be as "
+                "Free-text name of the geographic anchor to search around — "
+                "a neighborhood, city, or specific venue/landmark: 'Soho, "
+                "Manhattan', 'Shibuya, Tokyo', 'Union Street Brewing, "
+                "Kingston, NY'. Use this when the user named a place but no "
+                "coordinates are available; when the search is 'near <venue>', "
+                "the venue belongs HERE, not inside `queries`. The server "
+                "appends it to every query ('<query> in <area_name>'), which "
+                "is why queries themselves must stay location-free. Be as "
                 "specific as you'd be on Google Maps — 'Soho, Manhattan, NY' "
                 "returns better results than 'Soho'. Provide EITHER "
                 "`coordinates` OR `area_name`, never both."
@@ -410,6 +424,22 @@ async def search_nearby_places(
     concurrently against the same location anchor; results are merged,
     deduplicated, and each place notes which queries matched it.
 
+    Queries carry the WHAT; the anchor (`coordinates` or `area_name`)
+    carries the WHERE — never mix the two. Worked example, "good dinner
+    options near Union Street Brewing in Kingston before trivia":
+      WRONG: queries=["restaurants near Union Street Brewing Kingston NY",
+        "dinner restaurants uptown Kingston NY", "casual dinner Kingston NY"],
+        area_name="Kingston, NY"
+        — every query restates the location (the server already appends
+        ' in Kingston, NY' to each), the three queries are rephrasings of
+        one concept (three billed calls, same places), and the true anchor
+        (the brewery) is buried in query text where it fights the shared
+        anchor instead of defining it.
+      RIGHT: queries=["restaurants", "casual dining"],
+        area_name="Union Street Brewing, Kingston, NY"
+        — or, when walking distance matters, resolve the brewery to
+        coordinates first and pass coordinates + radius_m instead.
+
     This tool alone fully answers "event" phrasing that really means an
     outing to a standing place — dinner out, drinks, a driving range: the
     venue works whenever the user shows up, so no event scrape is needed.
@@ -432,7 +462,8 @@ async def search_nearby_places(
     Exactly one geographic anchor must be provided:
       - `coordinates` (a {lat, lng} object) — for a precise point you already
         know. Pair with `radius_m` to scope the search circle.
-      - `area_name` (free-text string like "Soho, Manhattan") — when the user
+      - `area_name` (free-text string — a neighborhood, city, or specific
+        venue like "Union Street Brewing, Kingston, NY") — when the user
         named a place but no coordinates are available.
     Passing neither raises ValueError; passing both also raises ValueError.
 
