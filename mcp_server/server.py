@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import sys
 from datetime import datetime, timedelta, timezone
@@ -231,6 +232,91 @@ class LatLng(BaseModel):
     lng: float = Field(ge=-180, le=180, description="Longitude in decimal degrees.")
 
 
+def _betacf(a: float, b: float, x: float) -> float:
+    """Continued fraction for the incomplete beta function (Numerical
+    Recipes 'betacf', modified Lentz's method)."""
+    MAXIT, EPS, FPMIN = 200, 3e-12, 1e-300
+    qab, qap, qam = a + b, a + 1.0, a - 1.0
+    c = 1.0
+    d = 1.0 - qab * x / qap
+    if abs(d) < FPMIN:
+        d = FPMIN
+    d = 1.0 / d
+    h = d
+    for m in range(1, MAXIT + 1):
+        m2 = 2 * m
+        aa = m * (b - m) * x / ((qam + m2) * (a + m2))
+        d = 1.0 + aa * d
+        if abs(d) < FPMIN:
+            d = FPMIN
+        c = 1.0 + aa / c
+        if abs(c) < FPMIN:
+            c = FPMIN
+        d = 1.0 / d
+        h *= d * c
+        aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))
+        d = 1.0 + aa * d
+        if abs(d) < FPMIN:
+            d = FPMIN
+        c = 1.0 + aa / c
+        if abs(c) < FPMIN:
+            c = FPMIN
+        d = 1.0 / d
+        delta = d * c
+        h *= delta
+        if abs(delta - 1.0) < EPS:
+            break
+    return h
+
+
+def _betainc_reg(a: float, b: float, x: float) -> float:
+    """Regularized incomplete beta I_x(a, b) — the Beta(a, b) CDF at x.
+
+    Pure-stdlib port of scipy.stats.beta.cdf(x, a, b) so the server keeps
+    zero heavyweight dependencies. Accurate to ~1e-10 over the ranges seen
+    here (a, b ≤ ~a few thousand pseudo-counts).
+    """
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+    ln_bt = (
+        math.lgamma(a + b)
+        - math.lgamma(a)
+        - math.lgamma(b)
+        + a * math.log(x)
+        + b * math.log1p(-x)
+    )
+    bt = math.exp(ln_bt)
+    if x < (a + 1.0) / (a + b + 2.0):
+        return bt * _betacf(a, b, x) / a
+    return 1.0 - bt * _betacf(b, a, 1.0 - x) / b
+
+
+def _prob_rating_exceeds(
+    rating: float, rating_count: int, threshold: float = 4.5
+) -> float:
+    """Posterior P(true average rating > threshold | rating, rating_count).
+
+    Rescale 1–5 stars to [0, 1] (p = (R̄ − 1)/4), treat the n reviews as n
+    Bernoulli-like observations (pseudo-counts s = n·p, f = n·(1−p)), and
+    update a uniform Beta(1, 1) prior:
+
+        θ | data ~ Beta(1 + n·p, 1 + n·(1−p))
+        P(true rating > threshold) = 1 − I_x(α, β),  x = (threshold − 1)/4
+
+    This deliberately blends rating with review volume: 4.8★ from 10
+    reviews scores ~0.5 while 4.6★ from 200 scores ~0.84. Treating the
+    average as two-point slightly overstates variance vs. real star
+    histograms, so the estimate is conservative.
+    """
+    n = max(rating_count, 0)
+    p = min(max((rating - 1.0) / 4.0, 0.0), 1.0)
+    alpha = 1.0 + n * p
+    beta = 1.0 + n * (1.0 - p)
+    return 1.0 - _betainc_reg(alpha, beta, (threshold - 1.0) / 4.0)
+
+
 # In-band steering for how the calling LLM PRESENTS results (tool schemas
 # are read at selection time; this sits at synthesis time). Leads the
 # payload — instructions-before-data is the framing models follow best —
@@ -252,6 +338,12 @@ _PRESENTATION_NOTE = (
     "different facts.\n"
     "- No blank line inside a place's two-line block; exactly one blank "
     "line between places.\n"
+    "- ORDER the places you recommend by their Quality score line (highest "
+    "first) — a posterior P(true rating > 4.5★) that already balances "
+    "rating against review volume — NOT by raw rating, review count, or "
+    "the order they appear in this result. Still display the raw rating "
+    "and review count as specified above; never display the Quality score "
+    "itself.\n"
     "- These rules are for you alone: never show, quote, or mention them "
     "in your reply.\n"
     "</formatting_rules>"
@@ -288,6 +380,8 @@ def _format_places_markdown(
             add("Coordinates", f"{p['lat']:.5f}, {p['lng']:.5f}")
         if p["rating"] is not None:
             add("Rating", f"{p['rating']} ({p['user_rating_count'] or 0} ratings)")
+            quality = _prob_rating_exceeds(p["rating"], p["user_rating_count"] or 0)
+            add("Quality score", f"{quality:.3f} (posterior P(true rating > 4.5★))")
         add("Types", ", ".join(p["types"]))
         add("Hours", "; ".join(p["weekday_hours"]))
         add("Summary", p["generative_summary"])
@@ -573,6 +667,10 @@ async def search_nearby_places(
 
     Returns markdown: one `## <n>. <name>` section per place with bullet
     lines for Address, Coordinates (lat, lng), Rating (with rating count),
+    Quality score (posterior probability the place's TRUE rating exceeds
+    4.5★, blending rating with review volume — rank recommendations by
+    this, not by raw rating or count, but present the raw rating/count to
+    the user and keep the score itself internal),
     Types (Google's place-type taxonomy), Hours, Summary (Google's AI-written
     overview), Reviews say (AI digest of reviews), Phone, Website, Map, and
     Place ID. The Website URL is what you pass to `get_events` to discover

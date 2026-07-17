@@ -203,6 +203,8 @@ async def test_search_nearby_places_with_coordinates_uses_bias():
     assert "- **Address:** addr" in out
     assert "- **Coordinates:** 1.00000, 2.00000" in out
     assert "- **Rating:** 4.0 (10 ratings)" in out
+    # Derived Beta-posterior confidence rides along with every rated place.
+    assert "- **Quality score:** 0.080 (posterior P(true rating > 4.5★))" in out
     assert "- **Types:** coffee_shop, cafe" in out
     assert "- **Hours:** Monday: 8:00 AM – 4:00 PM; Tuesday: 8:00 AM – 4:00 PM" in out
     assert "- **Summary:** A cozy neighborhood espresso bar." in out
@@ -450,8 +452,30 @@ def test_presentation_note_leads_results_but_not_empty_response():
     assert "rationale" in server._PRESENTATION_NOTE.lower()
     assert "never show, quote, or mention" in server._PRESENTATION_NOTE
 
+    # Ranking is steered to the Quality score, which itself stays hidden.
+    assert "Quality score" in server._PRESENTATION_NOTE
+    assert "never display the Quality score" in server._PRESENTATION_NOTE
+
     empty = server._format_places_markdown([])
     assert "formatting_rules" not in empty
+
+
+def test_prob_rating_exceeds_matches_reference_values():
+    """Beta-posterior quality score: uniform prior + pseudo-count update.
+
+    Reference points from the design spec: 4.6★×200 → Beta(181, 21);
+    4.8★×10 → Beta(10.5, 1.5) (high average, too few reviews to be
+    confident); 4.3★×500 → essentially ruled out."""
+    assert server._prob_rating_exceeds(4.6, 200) == pytest.approx(0.838, abs=1e-3)
+    assert server._prob_rating_exceeds(4.8, 10) == pytest.approx(0.588, abs=1e-3)
+    assert server._prob_rating_exceeds(4.3, 500) < 0.001
+    # No reviews → pure uniform prior mass above 0.875.
+    assert server._prob_rating_exceeds(4.9, 0) == pytest.approx(0.125)
+    # Volume must be able to beat raw average — the point of the feature.
+    assert server._prob_rating_exceeds(4.6, 200) > server._prob_rating_exceeds(4.8, 10)
+    # Extremes stay in [0, 1] without numeric blowups.
+    assert server._prob_rating_exceeds(5.0, 3000) == pytest.approx(1.0)
+    assert server._prob_rating_exceeds(1.0, 50) == pytest.approx(0.0)
 
 
 def test_pad_viewport_grows_venue_sized_boxes_to_neighborhood_scale():
