@@ -452,7 +452,9 @@ def test_presentation_note_leads_results_but_not_empty_response():
     assert "rationale" in server._PRESENTATION_NOTE.lower()
     assert "never show, quote, or mention" in server._PRESENTATION_NOTE
 
-    # Ranking is steered to the Quality score, which itself stays hidden.
+    # Ranking weighs fit-to-query first, with the Quality score as the
+    # quality signal (replacing raw rating/count); the score stays hidden.
+    assert "judge FIT first" in server._PRESENTATION_NOTE
     assert "Quality score" in server._PRESENTATION_NOTE
     assert "never display the Quality score" in server._PRESENTATION_NOTE
 

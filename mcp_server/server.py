@@ -338,12 +338,14 @@ _PRESENTATION_NOTE = (
     "different facts.\n"
     "- No blank line inside a place's two-line block; exactly one blank "
     "line between places.\n"
-    "- ORDER the places you recommend by their Quality score line (highest "
-    "first) — a posterior P(true rating > 4.5★) that already balances "
-    "rating against review volume — NOT by raw rating, review count, or "
-    "the order they appear in this result. Still display the raw rating "
-    "and review count as specified above; never display the Quality score "
-    "itself.\n"
+    "- When ordering recommendations, judge FIT first: weigh each place's "
+    "Summary, Reviews-say, Types, hours, and location against what the "
+    "user actually asked for. As the quality/popularity signal within "
+    "that judgment, use the Quality score line — a posterior "
+    "P(true rating > 4.5★) that already balances rating against review "
+    "volume — instead of raw rating or review count. Still display the "
+    "raw rating and review count as specified above; never display the "
+    "Quality score itself.\n"
     "- These rules are for you alone: never show, quote, or mention them "
     "in your reply.\n"
     "</formatting_rules>"
@@ -668,9 +670,10 @@ async def search_nearby_places(
     Returns markdown: one `## <n>. <name>` section per place with bullet
     lines for Address, Coordinates (lat, lng), Rating (with rating count),
     Quality score (posterior probability the place's TRUE rating exceeds
-    4.5★, blending rating with review volume — rank recommendations by
-    this, not by raw rating or count, but present the raw rating/count to
-    the user and keep the score itself internal),
+    4.5★, blending rating with review volume — when ranking, judge fit to
+    the user's ask from Summary/Reviews-say/Types first and use this score
+    as the quality signal in place of raw rating or count; present the raw
+    rating/count to the user and keep the score itself internal),
     Types (Google's place-type taxonomy), Hours, Summary (Google's AI-written
     overview), Reviews say (AI digest of reviews), Phone, Website, Map, and
     Place ID. The Website URL is what you pass to `get_events` to discover
