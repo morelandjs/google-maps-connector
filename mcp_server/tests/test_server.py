@@ -205,7 +205,7 @@ async def test_search_nearby_places_with_coordinates_uses_bias():
     assert "- **Rating:** 4.0 (10 ratings)" in out
     # Derived Beta-posterior quality floor rides along with every rated place.
     assert (
-        "- **Quality floor:** 3.41★ (80% sure the true rating is at least this)"
+        "- **Quality floor:** 3.74★ (80% sure the true rating is at least this)"
         in out
     )
     assert "- **Types:** coffee_shop, cafe" in out
@@ -471,10 +471,11 @@ def test_rating_quality_floor_matches_reference_values():
 
     Chosen over P(true rating > 4.5★) because the threshold probability
     saturates at 1.0 for any clearly-strong place; the floor stays on the
-    star scale and keeps discriminating."""
-    assert server._rating_quality_floor(4.9, 191) == pytest.approx(4.842, abs=1e-3)
-    assert server._rating_quality_floor(4.6, 1450) == pytest.approx(4.571, abs=1e-3)
-    assert server._rating_quality_floor(4.8, 12) == pytest.approx(4.296, abs=1e-3)
+    star scale and keeps discriminating. Prior is the skeptical
+    4★-centered Beta(15, 5), worth 20 pseudo-reviews."""
+    assert server._rating_quality_floor(4.9, 191) == pytest.approx(4.768, abs=1e-3)
+    assert server._rating_quality_floor(4.6, 1450) == pytest.approx(4.565, abs=1e-3)
+    assert server._rating_quality_floor(4.8, 12) == pytest.approx(4.085, abs=1e-3)
     # Volume must be able to beat raw average — the point of the feature.
     assert server._rating_quality_floor(4.6, 1450) > server._rating_quality_floor(
         4.8, 12
@@ -484,13 +485,19 @@ def test_rating_quality_floor_matches_reference_values():
     assert (
         server._rating_quality_floor(4.9, 191)
         - server._rating_quality_floor(4.6, 1450)
-        > 0.2
+        > 0.15
     )
-    # No reviews → the prior's own 20th percentile: 1 + 4·0.2.
-    assert server._rating_quality_floor(4.9, 0) == pytest.approx(1.8)
-    # Extremes stay within [1, 5] without numeric blowups.
+    # The prior tames thin-evidence outliers: 32 perfect ratings no longer
+    # outrank a volume-backed 4.7★.
+    assert server._rating_quality_floor(5.0, 32) < server._rating_quality_floor(
+        4.7, 176
+    )
+    # No reviews → the prior's own 20th percentile ("probably average").
+    assert server._rating_quality_floor(4.9, 0) == pytest.approx(3.686, abs=1e-3)
+    # Extremes stay within [1, 5] without numeric blowups; heavy real
+    # evidence pulls well clear of the prior in both directions.
     assert 4.99 < server._rating_quality_floor(5.0, 3000) < 5.0
-    assert 1.0 < server._rating_quality_floor(1.0, 50) < 1.1
+    assert 1.0 < server._rating_quality_floor(1.0, 50) < 2.0
 
 
 def test_pad_viewport_grows_venue_sized_boxes_to_neighborhood_scale():

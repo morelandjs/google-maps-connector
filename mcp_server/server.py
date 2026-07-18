@@ -308,6 +308,15 @@ def _beta_ppf(q: float, a: float, b: float) -> float:
     return (lo + hi) / 2.0
 
 
+# Prior over the rescaled true rating: Beta(15, 5) — mean 0.75 (4.0★),
+# strength 20 pseudo-reviews. Skeptical enough that a handful of perfect
+# ratings can't vault a place past volume-backed 4.6–4.7★ competitors,
+# while a couple hundred real reviews drown it entirely. An unrated place
+# gets the prior's own 20th percentile, ~3.69★ — "probably average".
+_PRIOR_ALPHA = 15.0
+_PRIOR_BETA = 5.0
+
+
 def _rating_quality_floor(
     rating: float, rating_count: int, quantile: float = 0.20
 ) -> float:
@@ -316,24 +325,24 @@ def _rating_quality_floor(
 
     Rescale 1–5 stars to [0, 1] (p = (R̄ − 1)/4), treat the n reviews as n
     Bernoulli-like observations (pseudo-counts s = n·p, f = n·(1−p)),
-    update a uniform Beta(1, 1) prior, and report the posterior's
+    update the 4★-centered Beta prior above, and report the posterior's
     `quantile`-th percentile mapped back to stars:
 
-        θ | data ~ Beta(1 + n·p, 1 + n·(1−p))
+        θ | data ~ Beta(α₀ + n·p, β₀ + n·(1−p))
         floor = 1 + 4·BetaInv(quantile, α, β)
 
     Unlike a fixed-threshold probability (P(true > 4.5★) saturates at 1.0
     once the posterior clears the threshold), the floor stays on the star
     scale and keeps discriminating among strong places, while thin review
-    counts still drag it down hard: 4.9★×191 → ~4.84★, 4.6★×1450 → ~4.57★,
-    4.8★×12 → ~4.30★. Treating the average as two-point slightly
+    counts drag it toward the prior: 4.9★×191 → ~4.77★, 4.6★×1450 →
+    ~4.57★, 4.8★×12 → ~4.09★. Treating the average as two-point slightly
     overstates variance vs. real star histograms, so the floor is
     conservative.
     """
     n = max(rating_count, 0)
     p = min(max((rating - 1.0) / 4.0, 0.0), 1.0)
-    alpha = 1.0 + n * p
-    beta = 1.0 + n * (1.0 - p)
+    alpha = _PRIOR_ALPHA + n * p
+    beta = _PRIOR_BETA + n * (1.0 - p)
     return 1.0 + 4.0 * _beta_ppf(quantile, alpha, beta)
 
 
