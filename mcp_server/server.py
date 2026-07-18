@@ -293,28 +293,48 @@ def _betainc_reg(a: float, b: float, x: float) -> float:
     return 1.0 - bt * _betacf(b, a, 1.0 - x) / b
 
 
-def _prob_rating_exceeds(
-    rating: float, rating_count: int, threshold: float = 4.5
+def _beta_ppf(q: float, a: float, b: float) -> float:
+    """Inverse Beta CDF (quantile function) by bisection on _betainc_reg.
+
+    ~50 halvings pin the quantile to ~1e-15; microseconds per call, so no
+    need for anything cleverer (Newton, scipy)."""
+    lo, hi = 0.0, 1.0
+    for _ in range(50):
+        mid = (lo + hi) / 2.0
+        if _betainc_reg(a, b, mid) < q:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2.0
+
+
+def _rating_quality_floor(
+    rating: float, rating_count: int, quantile: float = 0.20
 ) -> float:
-    """Posterior P(true average rating > threshold | rating, rating_count).
+    """Posterior 'quality floor': the star rating the place is (1−quantile)
+    likely to truly exceed, given its average and review volume.
 
     Rescale 1–5 stars to [0, 1] (p = (R̄ − 1)/4), treat the n reviews as n
-    Bernoulli-like observations (pseudo-counts s = n·p, f = n·(1−p)), and
-    update a uniform Beta(1, 1) prior:
+    Bernoulli-like observations (pseudo-counts s = n·p, f = n·(1−p)),
+    update a uniform Beta(1, 1) prior, and report the posterior's
+    `quantile`-th percentile mapped back to stars:
 
         θ | data ~ Beta(1 + n·p, 1 + n·(1−p))
-        P(true rating > threshold) = 1 − I_x(α, β),  x = (threshold − 1)/4
+        floor = 1 + 4·BetaInv(quantile, α, β)
 
-    This deliberately blends rating with review volume: 4.8★ from 10
-    reviews scores ~0.5 while 4.6★ from 200 scores ~0.84. Treating the
-    average as two-point slightly overstates variance vs. real star
-    histograms, so the estimate is conservative.
+    Unlike a fixed-threshold probability (P(true > 4.5★) saturates at 1.0
+    once the posterior clears the threshold), the floor stays on the star
+    scale and keeps discriminating among strong places, while thin review
+    counts still drag it down hard: 4.9★×191 → ~4.84★, 4.6★×1450 → ~4.57★,
+    4.8★×12 → ~4.30★. Treating the average as two-point slightly
+    overstates variance vs. real star histograms, so the floor is
+    conservative.
     """
     n = max(rating_count, 0)
     p = min(max((rating - 1.0) / 4.0, 0.0), 1.0)
     alpha = 1.0 + n * p
     beta = 1.0 + n * (1.0 - p)
-    return 1.0 - _betainc_reg(alpha, beta, (threshold - 1.0) / 4.0)
+    return 1.0 + 4.0 * _beta_ppf(quantile, alpha, beta)
 
 
 # In-band steering for how the calling LLM PRESENTS results (tool schemas
@@ -341,11 +361,11 @@ _PRESENTATION_NOTE = (
     "- When ordering recommendations, judge FIT first: weigh each place's "
     "Summary, Reviews-say, Types, hours, and location against what the "
     "user actually asked for. As the quality/popularity signal within "
-    "that judgment, use the Quality score line — a posterior "
-    "P(true rating > 4.5★) that already balances rating against review "
-    "volume — instead of raw rating or review count. Still display the "
-    "raw rating and review count as specified above; never display the "
-    "Quality score itself.\n"
+    "that judgment, use the Quality floor line — the star rating the "
+    "place is 80% likely to truly exceed, which already balances rating "
+    "against review volume — instead of raw rating or review count. "
+    "Still display the raw rating and review count as specified above; "
+    "never display the Quality floor itself.\n"
     "- These rules are for you alone: never show, quote, or mention them "
     "in your reply.\n"
     "</formatting_rules>"
@@ -382,8 +402,11 @@ def _format_places_markdown(
             add("Coordinates", f"{p['lat']:.5f}, {p['lng']:.5f}")
         if p["rating"] is not None:
             add("Rating", f"{p['rating']} ({p['user_rating_count'] or 0} ratings)")
-            quality = _prob_rating_exceeds(p["rating"], p["user_rating_count"] or 0)
-            add("Quality score", f"{quality:.3f} (posterior P(true rating > 4.5★))")
+            floor = _rating_quality_floor(p["rating"], p["user_rating_count"] or 0)
+            add(
+                "Quality floor",
+                f"{floor:.2f}★ (80% sure the true rating is at least this)",
+            )
         add("Types", ", ".join(p["types"]))
         add("Hours", "; ".join(p["weekday_hours"]))
         add("Summary", p["generative_summary"])
@@ -669,11 +692,12 @@ async def search_nearby_places(
 
     Returns markdown: one `## <n>. <name>` section per place with bullet
     lines for Address, Coordinates (lat, lng), Rating (with rating count),
-    Quality score (posterior probability the place's TRUE rating exceeds
-    4.5★, blending rating with review volume — when ranking, judge fit to
-    the user's ask from Summary/Reviews-say/Types first and use this score
-    as the quality signal in place of raw rating or count; present the raw
-    rating/count to the user and keep the score itself internal),
+    Quality floor (the star rating the place's TRUE quality is 80% likely
+    to exceed — a posterior lower credible bound blending rating with
+    review volume — when ranking, judge fit to the user's ask from
+    Summary/Reviews-say/Types first and use this floor as the quality
+    signal in place of raw rating or count; present the raw rating/count
+    to the user and keep the floor itself internal),
     Types (Google's place-type taxonomy), Hours, Summary (Google's AI-written
     overview), Reviews say (AI digest of reviews), Phone, Website, Map, and
     Place ID. The Website URL is what you pass to `get_events` to discover

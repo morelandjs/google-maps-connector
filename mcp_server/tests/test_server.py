@@ -203,8 +203,11 @@ async def test_search_nearby_places_with_coordinates_uses_bias():
     assert "- **Address:** addr" in out
     assert "- **Coordinates:** 1.00000, 2.00000" in out
     assert "- **Rating:** 4.0 (10 ratings)" in out
-    # Derived Beta-posterior confidence rides along with every rated place.
-    assert "- **Quality score:** 0.080 (posterior P(true rating > 4.5★))" in out
+    # Derived Beta-posterior quality floor rides along with every rated place.
+    assert (
+        "- **Quality floor:** 3.41★ (80% sure the true rating is at least this)"
+        in out
+    )
     assert "- **Types:** coffee_shop, cafe" in out
     assert "- **Hours:** Monday: 8:00 AM – 4:00 PM; Tuesday: 8:00 AM – 4:00 PM" in out
     assert "- **Summary:** A cozy neighborhood espresso bar." in out
@@ -452,32 +455,42 @@ def test_presentation_note_leads_results_but_not_empty_response():
     assert "rationale" in server._PRESENTATION_NOTE.lower()
     assert "never show, quote, or mention" in server._PRESENTATION_NOTE
 
-    # Ranking weighs fit-to-query first, with the Quality score as the
-    # quality signal (replacing raw rating/count); the score stays hidden.
+    # Ranking weighs fit-to-query first, with the Quality floor as the
+    # quality signal (replacing raw rating/count); the floor stays hidden.
     assert "judge FIT first" in server._PRESENTATION_NOTE
-    assert "Quality score" in server._PRESENTATION_NOTE
-    assert "never display the Quality score" in server._PRESENTATION_NOTE
+    assert "Quality floor" in server._PRESENTATION_NOTE
+    assert "never display the Quality floor" in server._PRESENTATION_NOTE
 
     empty = server._format_places_markdown([])
     assert "formatting_rules" not in empty
 
 
-def test_prob_rating_exceeds_matches_reference_values():
-    """Beta-posterior quality score: uniform prior + pseudo-count update.
+def test_rating_quality_floor_matches_reference_values():
+    """Beta-posterior quality floor: uniform prior + pseudo-count update,
+    20th-percentile lower credible bound mapped back to stars.
 
-    Reference points from the design spec: 4.6★×200 → Beta(181, 21);
-    4.8★×10 → Beta(10.5, 1.5) (high average, too few reviews to be
-    confident); 4.3★×500 → essentially ruled out."""
-    assert server._prob_rating_exceeds(4.6, 200) == pytest.approx(0.838, abs=1e-3)
-    assert server._prob_rating_exceeds(4.8, 10) == pytest.approx(0.588, abs=1e-3)
-    assert server._prob_rating_exceeds(4.3, 500) < 0.001
-    # No reviews → pure uniform prior mass above 0.875.
-    assert server._prob_rating_exceeds(4.9, 0) == pytest.approx(0.125)
+    Chosen over P(true rating > 4.5★) because the threshold probability
+    saturates at 1.0 for any clearly-strong place; the floor stays on the
+    star scale and keeps discriminating."""
+    assert server._rating_quality_floor(4.9, 191) == pytest.approx(4.842, abs=1e-3)
+    assert server._rating_quality_floor(4.6, 1450) == pytest.approx(4.571, abs=1e-3)
+    assert server._rating_quality_floor(4.8, 12) == pytest.approx(4.296, abs=1e-3)
     # Volume must be able to beat raw average — the point of the feature.
-    assert server._prob_rating_exceeds(4.6, 200) > server._prob_rating_exceeds(4.8, 10)
-    # Extremes stay in [0, 1] without numeric blowups.
-    assert server._prob_rating_exceeds(5.0, 3000) == pytest.approx(1.0)
-    assert server._prob_rating_exceeds(1.0, 50) == pytest.approx(0.0)
+    assert server._rating_quality_floor(4.6, 1450) > server._rating_quality_floor(
+        4.8, 12
+    )
+    # ...but strong places must NOT collapse to a shared ceiling (the
+    # saturation failure of the threshold-probability variant).
+    assert (
+        server._rating_quality_floor(4.9, 191)
+        - server._rating_quality_floor(4.6, 1450)
+        > 0.2
+    )
+    # No reviews → the prior's own 20th percentile: 1 + 4·0.2.
+    assert server._rating_quality_floor(4.9, 0) == pytest.approx(1.8)
+    # Extremes stay within [1, 5] without numeric blowups.
+    assert 4.99 < server._rating_quality_floor(5.0, 3000) < 5.0
+    assert 1.0 < server._rating_quality_floor(1.0, 50) < 1.1
 
 
 def test_pad_viewport_grows_venue_sized_boxes_to_neighborhood_scale():
