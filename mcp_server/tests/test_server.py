@@ -465,6 +465,49 @@ def test_presentation_note_leads_results_but_not_empty_response():
     assert "formatting_rules" not in empty
 
 
+@respx.mock
+async def test_results_are_sorted_by_quality_floor():
+    """Google's relevance order is replaced by descending quality floor;
+    unrated places take the prior's floor and land mid-pack."""
+
+    def place(pid, name, rating=None, count=None):
+        p = {
+            "id": pid,
+            "displayName": {"text": name},
+            "formattedAddress": "addr",
+            "googleMapsUri": f"https://maps.example/{pid}",
+        }
+        if rating is not None:
+            p["rating"] = rating
+            p["userRatingCount"] = count
+        return p
+
+    respx.post(PLACES_SEARCH_TEXT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "places": [
+                    # Google order: weak first, strong last, unrated between.
+                    place("a", "Thin Evidence", 4.9, 8),      # floor ~4.03
+                    place("b", "No Reviews"),                  # prior ~3.69
+                    place("c", "Proven Great", 4.7, 900),      # floor ~4.63
+                    place("d", "Solid Middle", 4.4, 300),      # floor ~4.30
+                ]
+            },
+        )
+    )
+
+    out = await server.search_nearby_places(
+        queries=["coffee"], coordinates=server.LatLng(lat=40.7, lng=-74.0)
+    )
+    order = [
+        line.split(". ", 1)[1]
+        for line in out.splitlines()
+        if line.startswith("## ")
+    ]
+    assert order == ["Proven Great", "Solid Middle", "Thin Evidence", "No Reviews"]
+
+
 def test_rating_quality_floor_matches_reference_values():
     """Beta-posterior quality floor: uniform prior + pseudo-count update,
     20th-percentile lower credible bound mapped back to stars.
